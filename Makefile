@@ -55,7 +55,11 @@ SEL4_INCLUDES := -Ilibsel4/include -Ilibsel4/arch_include/arm \
     -I$(BUILD_DIR)/libsel4/autoconf -I$(BUILD_DIR)/libsel4/gen_config \
     -I$(BUILD_DIR)/gen_config
 
-ROOTSRV_SRCS := boot/lib/crt0.S boot/rootserver/main.c \
+TEP_INCLUDES := -Iboot/include -Iboot/lib
+TEP_LIB_SRCS := boot/lib/crt0.S boot/lib/console.c boot/lib/tls.c
+TEP_LIB_HDRS := boot/lib/console.h boot/lib/tls.h boot/lib/program.ld
+
+ROOTSRV_SRCS := $(TEP_LIB_SRCS) boot/rootserver/main.c \
     boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
     boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c
 ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
@@ -78,9 +82,9 @@ $(KERNEL): kernel
 libsel4-headers: $(BUILD_DIR)/build.ninja
 	cmake --build $(BUILD_DIR) --target sel4_generated
 
-$(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) boot/lib/program.ld
+$(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS)
 	@mkdir -p $(BOOT_DIR)
-	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) -T boot/lib/program.ld \
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
 	    $(ROOTSRV_SRCS) -o $@
 
 $(IMAGE): kernel $(ROOTSRV) boot/loader/start.S boot/loader/loader.c \

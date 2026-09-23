@@ -1,28 +1,16 @@
 /*
- * tepOS root task runtime: debug console output, thread-local storage and
- * the seL4 IPC buffer.
+ * tepOS root task runtime: thread-local storage and the seL4 IPC buffer.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #pragma once
 
-#include <stddef.h>
 #include <sel4/sel4.h>
 
+#include "console.h"
+
 #define TEPOS_VERSION "0.1.0"
-
-#ifndef BIT
-#define BIT(n) (1UL << (n))
-#endif
-
-/* Kernel debug console (CONFIG_PRINTING). */
-void tep_puts(const char *s);
-void tep_puthex(seL4_Word v);
-void tep_putdec(seL4_Word v);
-
-/* "tepOS: <msg>\n" */
-void tep_log(const char *msg);
 
 /*
  * Set up the initial thread's TLS block and IPC buffer. Must run before any
