@@ -71,6 +71,22 @@ static const char *give_device(struct tep_service *svc)
         }
     }
 
+    if (svc->dma) {
+        /* From the service's pool, so it is revoked (and zeroed) with the service. */
+        seL4_CPtr frame = svc_alloc(svc, seL4_ARM_SmallPageObject, 0);
+        if (frame == seL4_CapNull ||
+            tep_map_frame(svc->vspace, frame, TEP_SVC_DMA_BASE, seL4_ReadWrite,
+                          seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever,
+                          svc_alloc, svc) != 0) {
+            return "DMA page setup failed";
+        }
+        seL4_ARM_Page_GetAddress_t addr = seL4_ARM_Page_GetAddress(frame);
+        if (addr.error != seL4_NoError) {
+            return "DMA page address lookup failed";
+        }
+        svc->dma_paddr = addr.paddr;
+    }
+
     if (svc->dev_irq != 0) {
         if (svc->irq_handler == seL4_CapNull) {
             seL4_CPtr slot = tep_cslot_alloc();
@@ -181,8 +197,10 @@ static const char *build(struct tep_service *svc, seL4_CPtr root_ep)
     regs.pc = entry;
     regs.x0 = TEP_SVC_IPC_BUFFER;
     regs.x1 = svc->id;
-    /* pc, sp, spsr, x0, x1: crt0 sets up its own stack. */
-    if (seL4_TCB_WriteRegisters(svc->tcb, 1, 0, 5, &regs) != seL4_NoError) {
+    regs.x2 = svc->dma ? svc->dma_paddr : 0;
+    regs.x3 = svc->dev_paddr & (BIT(seL4_PageBits) - 1);
+    /* pc, sp, spsr, x0..x3 (see <tep/ipc.h>); crt0 sets up its own stack. */
+    if (seL4_TCB_WriteRegisters(svc->tcb, 1, 0, 7, &regs) != seL4_NoError) {
         return "starting service thread failed";
     }
     return NULL;

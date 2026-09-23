@@ -98,3 +98,10 @@ enum tep_service_slot {
 /* Fixed virtual addresses in every service's address space. */
 #define TEP_SVC_IPC_BUFFER  0x3ff000UL      /* just below the image at 0x400000 */
 #define TEP_SVC_DEVICE_BASE 0x10000000UL    /* the service's device page, if any */
+#define TEP_SVC_DMA_BASE    0x10001000UL    /* its DMA page, if any */
+
+/*
+ * A service starts with x0 = IPC buffer address, x1 = service id,
+ * x2 = physical address of its DMA page (0 if none), x3 = offset of its
+ * device's registers within the device page.
+ */
