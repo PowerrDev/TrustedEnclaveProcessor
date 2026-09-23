@@ -24,13 +24,11 @@ int tep_vspace_init(void)
     return 0;
 }
 
-static int map_frame(seL4_CPtr frame, seL4_Word vaddr)
+int tep_map_frame(seL4_CPtr vspace, seL4_CPtr frame, seL4_Word vaddr,
+                  seL4_CapRights_t rights, seL4_ARM_VMAttributes attr)
 {
-    const seL4_ARM_VMAttributes attr = seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever;
-
     for (int i = 0; i <= MAX_PT_LEVELS; i++) {
-        seL4_Error err = seL4_ARM_Page_Map(frame, seL4_CapInitThreadVSpace, vaddr,
-                                           seL4_ReadWrite, attr);
+        seL4_Error err = seL4_ARM_Page_Map(frame, vspace, vaddr, rights, attr);
         if (err == seL4_NoError) {
             return 0;
         }
@@ -42,8 +40,7 @@ static int map_frame(seL4_CPtr frame, seL4_Word vaddr)
         if (pt == seL4_CapNull) {
             return -1;
         }
-        err = seL4_ARM_PageTable_Map(pt, seL4_CapInitThreadVSpace, vaddr,
-                                     seL4_ARM_Default_VMAttributes);
+        err = seL4_ARM_PageTable_Map(pt, vspace, vaddr, seL4_ARM_Default_VMAttributes);
         if (err != seL4_NoError) {
             return -1;
         }
@@ -60,7 +57,10 @@ void *tep_pages_alloc(seL4_Word npages)
     }
     for (seL4_Word i = 0; i < npages; i++) {
         seL4_CPtr frame = tep_object_alloc(seL4_ARM_SmallPageObject, 0);
-        if (frame == seL4_CapNull || map_frame(frame, base + (i << seL4_PageBits)) != 0) {
+        if (frame == seL4_CapNull ||
+            tep_map_frame(seL4_CapInitThreadVSpace, frame, base + (i << seL4_PageBits),
+                          seL4_ReadWrite,
+                          seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever) != 0) {
             /* Already-mapped pages stay behind heap_next and are not reused. */
             heap_next = base + ((i + 1) << seL4_PageBits);
             return NULL;

@@ -13,7 +13,17 @@
 #define TEP_HEAP_BASE 0x10000000UL
 #define TEP_HEAP_SIZE 0x10000000UL
 
+/* One page in the root task, used to fill frames destined for other VSpaces. */
+#define TEP_SCRATCH_VADDR (TEP_HEAP_BASE + TEP_HEAP_SIZE)
+
 int tep_vspace_init(void);
+
+/*
+ * Map a frame into any VSpace, creating page tables as needed (their caps
+ * stay in the root CNode). Returns 0 on success.
+ */
+int tep_map_frame(seL4_CPtr vspace, seL4_CPtr frame, seL4_Word vaddr,
+                  seL4_CapRights_t rights, seL4_ARM_VMAttributes attr);
 
 /*
  * Map npages zeroed, read/write, non-executable pages and return their base
