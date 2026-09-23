@@ -98,7 +98,7 @@ ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
     boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h \
     boot/rootserver/timer.h boot/rootserver/manager.h
 
-.PHONY: all kernel libsel4-headers image run debug clean-boot
+.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto
 
 all: image
 
@@ -137,6 +137,18 @@ run: $(IMAGE)
 debug: $(IMAGE)
 	@echo "QEMU waiting for gdb: $(CROSS)gdb $(KERNEL) -ex 'target remote :1234'"
 	$(QEMU) $(QEMU_FLAGS) -S -s
+
+# Host check of the crypto primitives: boot/lib/sha256.c against the FIPS 180-4
+# and RFC 4231 vectors, vendored Monocypher's Ed25519 (RFC 8032) and AEAD.
+HOST_CC ?= cc
+CRYPTO_SRCS := tools/crypto_test.c boot/lib/sha256.c \
+    boot/third_party/monocypher/monocypher.c boot/third_party/monocypher/monocypher-ed25519.c
+
+test-crypto: $(CRYPTO_SRCS) boot/lib/sha256.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -fsanitize=address,undefined \
+	    -Iboot/lib -Iboot/third_party/monocypher $(CRYPTO_SRCS) -o $(BUILD_DIR)/crypto_test
+	$(BUILD_DIR)/crypto_test
 
 clean-boot:
 	rm -rf $(BOOT_DIR)
