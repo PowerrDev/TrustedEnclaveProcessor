@@ -63,6 +63,9 @@ enum tep_status {
 #define TEP_SERVICE_BADGE(id, fault) \
     (TEP_BADGE_SERVICE | ((seL4_Word)(id) << TEP_BADGE_ID_SHIFT) | ((fault) ? TEP_BADGE_FAULT : 0))
 
+/* Bits signalled on the root task's bound notification (never TEP_BADGE_SERVICE). */
+#define TEP_EVENT_TIMER (1UL << 0)
+
 /*
  * Capability layout of every service's CSpace (a single-level CNode; slot 0
  * stays empty so seL4_CapNull never resolves).

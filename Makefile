@@ -71,10 +71,12 @@ $(DIAG_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ip
 ROOTSRV_SRCS := $(TEP_LIB_SRCS) boot/rootserver/main.c \
     boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
     boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c \
-    boot/rootserver/elf.c boot/rootserver/service.c boot/rootserver/services.S
+    boot/rootserver/elf.c boot/rootserver/service.c boot/rootserver/services.S \
+    boot/rootserver/timer.c boot/rootserver/manager.c
 ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
     boot/rootserver/cspace.h boot/rootserver/untyped.h boot/rootserver/vspace.h \
-    boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h
+    boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h \
+    boot/rootserver/timer.h boot/rootserver/manager.h
 
 .PHONY: all kernel libsel4-headers image run debug clean-boot
 
