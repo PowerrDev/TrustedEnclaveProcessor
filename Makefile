@@ -56,8 +56,10 @@ SEL4_INCLUDES := -Ilibsel4/include -Ilibsel4/arch_include/arm \
     -I$(BUILD_DIR)/gen_config
 
 ROOTSRV_SRCS := boot/rootserver/crt0.S boot/rootserver/main.c \
-    boot/rootserver/runtime.c boot/rootserver/bootinfo.c
-ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h
+    boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
+    boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c
+ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
+    boot/rootserver/cspace.h boot/rootserver/untyped.h boot/rootserver/vspace.h
 
 .PHONY: all kernel libsel4-headers image run debug clean-boot
 

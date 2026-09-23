@@ -12,6 +12,10 @@
 
 #define TEPOS_VERSION "0.1.0"
 
+#ifndef BIT
+#define BIT(n) (1UL << (n))
+#endif
+
 /* Kernel debug console (CONFIG_PRINTING). */
 void tep_puts(const char *s);
 void tep_puthex(seL4_Word v);

@@ -7,7 +7,6 @@
 #include "bootinfo.h"
 #include "runtime.h"
 
-#define BIT(n)    (1UL << (n))
 #define PAGE_MASK (BIT(seL4_PageBits) - 1)
 
 static int region_ok(seL4_SlotRegion r, seL4_Word slots)
