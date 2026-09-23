@@ -1,11 +1,11 @@
 /*
  * tepOS root task: initialisation sequence and main event loop.
  *
- * Phase 1 scope: validate BootInfo, bring up the runtime (TLS + IPC buffer),
- * create the root task's event notification and block on it forever. The
- * capability/memory allocators, service manager, IPC infrastructure and
- * security services are later phases and are deliberately not reported as
- * initialised here.
+ * Validates BootInfo, brings up the runtime (TLS + IPC buffer) and the
+ * capability, kernel object and page allocators, creates the root task's
+ * event notification and blocks on it forever. The service manager, IPC
+ * infrastructure and security services are later phases and are
+ * deliberately not reported as initialised here.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,41 +13,49 @@
 #include <sel4/sel4.h>
 
 #include "bootinfo.h"
+#include "cspace.h"
 #include "runtime.h"
+#include "untyped.h"
+#include "vspace.h"
 
 /* Root task event notification; badge bits will identify event sources. */
 static seL4_CPtr event_ntfn;
 
 /*
- * Retype a notification from the smallest RAM untyped that can hold one, into
- * the first free slot. This is a single fixed allocation; the general
- * capability and memory allocators arrive in phase 2.
+ * Exercise the allocators end to end before anything depends on them: a slot
+ * round trip, and freshly mapped pages that must read as zero and hold data.
  */
-static const char *create_event_notification(const seL4_BootInfo *bi)
+static const char *memory_selftest(void)
 {
-    seL4_Word n_ut = bi->untyped.end - bi->untyped.start;
-    seL4_Word best = n_ut;
+    seL4_Word nfree = tep_cslots_free_count();
+    seL4_CPtr slot = tep_cslot_alloc();
 
-    for (seL4_Word i = 0; i < n_ut; i++) {
-        const seL4_UntypedDesc *ut = &bi->untypedList[i];
-        if (ut->isDevice || ut->sizeBits < seL4_NotificationBits) {
-            continue;
-        }
-        if (best == n_ut || ut->sizeBits < bi->untypedList[best].sizeBits) {
-            best = i;
-        }
+    if (slot == seL4_CapNull || tep_cslots_free_count() != nfree - 1) {
+        return "cslot allocation failed";
     }
-    if (best == n_ut) {
-        return "no RAM untyped for event notification";
+    tep_cslot_free(slot);
+    if (tep_cslots_free_count() != nfree) {
+        return "cslot free failed";
     }
 
-    seL4_CPtr slot = bi->empty.start;
-    seL4_Error err = seL4_Untyped_Retype(bi->untyped.start + best, seL4_NotificationObject, 0,
-                                         seL4_CapInitThreadCNode, 0, 0, slot, 1);
-    if (err != seL4_NoError) {
-        return "event notification retype failed";
+    const seL4_Word npages = 2;
+    volatile seL4_Word *p = tep_pages_alloc(npages);
+    const seL4_Word nwords = (npages << seL4_PageBits) / sizeof(seL4_Word);
+
+    if (p == NULL) {
+        return "page allocation failed";
     }
-    event_ntfn = slot;
+    for (seL4_Word i = 0; i < nwords; i++) {
+        if (p[i] != 0) {
+            return "new page not zeroed";
+        }
+        p[i] = i ^ 0x7465704f53UL;
+    }
+    for (seL4_Word i = 0; i < nwords; i++) {
+        if (p[i] != (i ^ 0x7465704f53UL)) {
+            return "page readback mismatch";
+        }
+    }
     return NULL;
 }
 
@@ -86,11 +94,39 @@ int main(seL4_BootInfo *bi)
     }
     tep_log("runtime initialized");
 
-    err = create_event_notification(bi);
+    if (tep_cspace_init(bi) != 0) {
+        tep_fatal("capability allocator initialization failed");
+    }
+    tep_log("capability allocator initialized");
+
+    if (tep_untyped_init(bi) != 0 || tep_vspace_init() != 0) {
+        tep_fatal("memory allocator initialization failed");
+    }
+    tep_log("memory allocator initialized");
+
+    err = memory_selftest();
     if (err != NULL) {
         tep_fatal(err);
     }
+    tep_log("memory allocator self-test passed");
+
+    event_ntfn = tep_object_alloc(seL4_NotificationObject, 0);
+    if (event_ntfn == seL4_CapNull) {
+        tep_fatal("event notification allocation failed");
+    }
     tep_log("root task initialized");
+
+    tep_puts("tepOS: free cslots: ");
+    tep_putdec(tep_cslots_free_count());
+    tep_puts("\ntepOS: RAM used: ");
+    tep_putdec(tep_untyped_ram_used());
+    tep_puts(" bytes of ");
+    tep_putdec(tep_untyped_ram_total() >> 10);
+    tep_puts(" KiB in ");
+    tep_putdec(tep_untyped_ram_count());
+    tep_puts(" untypeds\ntepOS: pages mapped: ");
+    tep_putdec(tep_pages_mapped());
+    tep_puts("\n");
 
     event_loop();
 }
