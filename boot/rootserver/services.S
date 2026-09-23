@@ -10,3 +10,8 @@
 diag_elf_start:
     .incbin "diagsvc.elf"
 diag_elf_end:
+    .balign 8
+    .global mailbox_elf_start, mailbox_elf_end
+mailbox_elf_start:
+    .incbin "mailboxsvc.elf"
+mailbox_elf_end:

@@ -30,13 +30,28 @@ enum tep_ipc_label {
     TEP_IPC_READY = 0x100,      /* service -> root: MR0 = TEP_IPC_VERSION */
     TEP_IPC_PONG  = 0x101,      /* service -> root: MR0 = TEP_IPC_VERSION,
                                  * MR1 = pings answered so far */
+    TEP_IPC_HEALTH = 0x102,     /* service -> root: MR0 = TEP_IPC_VERSION;
+                                 * needs TEP_PERM_HEALTH */
 };
 
-#define TEP_IPC_READY_LEN 1
-#define TEP_IPC_PONG_LEN  2
+#define TEP_IPC_READY_LEN  1
+#define TEP_IPC_PONG_LEN   2
+#define TEP_IPC_HEALTH_LEN 1
+
+/*
+ * HEALTH reply: MR0 = TEP_IPC_VERSION, MR1 = boot id, MR2 = health
+ * (enum tep_mb_health), MR3 = n services, then n words of
+ * id | state << 8 | restarts << 16 (state as enum tep_mb_service_state).
+ */
+#define TEP_IPC_MAX_SERVICES      8
+#define TEP_IPC_HEALTH_REPLY_LEN(n) (4 + (n))
+
+/* Per-service permissions for requests to the root task. */
+#define TEP_PERM_HEALTH (1UL << 0)
 
 /* Bits the root task signals on a service's notification. */
 #define TEP_SVC_EVENT_PING (1UL << 0)   /* answer with TEP_IPC_PONG */
+#define TEP_SVC_EVENT_IRQ  (1UL << 1)   /* the service's device interrupt fired */
 
 /* Reply labels. */
 enum tep_status {
@@ -74,10 +89,12 @@ enum tep_service_slot {
     TEP_SVC_SLOT_NOTIFY   = 1,  /* the service's notification, wait only */
     TEP_SVC_SLOT_CONTROL  = 2,  /* root task endpoint, badged per service */
     TEP_SVC_SLOT_FAULT    = 3,  /* root task endpoint, badged as fault source */
+    TEP_SVC_SLOT_IRQ      = 4,  /* IRQ handler, only for services with a device */
     TEP_SVC_SLOT_COUNT
 };
 
 #define TEP_SVC_CNODE_BITS 4
 
 /* Fixed virtual addresses in every service's address space. */
-#define TEP_SVC_IPC_BUFFER 0x3ff000UL   /* just below the image at 0x400000 */
+#define TEP_SVC_IPC_BUFFER  0x3ff000UL      /* just below the image at 0x400000 */
+#define TEP_SVC_DEVICE_BASE 0x10000000UL    /* the service's device page, if any */

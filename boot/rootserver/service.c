@@ -43,6 +43,62 @@ static int give_cap(struct tep_service *svc, seL4_Word slot, seL4_CPtr src,
                            seL4_CapInitThreadCNode, src, seL4_WordBits, rights, badge);
 }
 
+/*
+ * Map a copy of the device frame and hand over a copy of the IRQ handler.
+ * The copies live in tracked slots / the service CNode, so stopping the
+ * service removes them while the root task keeps the originals.
+ */
+static const char *give_device(struct tep_service *svc)
+{
+    if (svc->dev_paddr != 0) {
+        if (svc->dev_frame == seL4_CapNull) {
+            svc->dev_frame = tep_device_frame_alloc(svc->dev_paddr);
+            if (svc->dev_frame == seL4_CapNull) {
+                return "device frame unavailable";
+            }
+        }
+        seL4_CPtr copy = track(svc, tep_cslot_alloc());
+        if (copy == seL4_CapNull ||
+            seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, seL4_WordBits,
+                            seL4_CapInitThreadCNode, svc->dev_frame, seL4_WordBits,
+                            seL4_ReadWrite) != seL4_NoError) {
+            return "copying device frame failed";
+        }
+        /* Not cacheable: device memory. */
+        if (tep_map_frame(svc->vspace, copy, TEP_SVC_DEVICE_BASE, seL4_ReadWrite,
+                          seL4_ARM_ExecuteNever, svc_alloc, svc) != 0) {
+            return "mapping device frame failed";
+        }
+    }
+
+    if (svc->dev_irq != 0) {
+        if (svc->irq_handler == seL4_CapNull) {
+            seL4_CPtr slot = tep_cslot_alloc();
+            if (slot == seL4_CapNull ||
+                seL4_IRQControl_Get(seL4_CapIRQControl, svc->dev_irq, seL4_CapInitThreadCNode,
+                                    slot, seL4_WordBits) != seL4_NoError) {
+                tep_cslot_free(slot);
+                return "claiming device IRQ failed";
+            }
+            svc->irq_handler = slot;
+        }
+        seL4_CPtr irq_ntfn = track(svc, tep_cslot_alloc());
+        if (irq_ntfn == seL4_CapNull ||
+            seL4_CNode_Mint(seL4_CapInitThreadCNode, irq_ntfn, seL4_WordBits,
+                            seL4_CapInitThreadCNode, svc->notify, seL4_WordBits,
+                            seL4_CanWrite, TEP_SVC_EVENT_IRQ) != seL4_NoError ||
+            seL4_IRQHandler_SetNotification(svc->irq_handler, irq_ntfn) != seL4_NoError) {
+            return "routing device IRQ failed";
+        }
+        if (seL4_CNode_Copy(svc->cnode, TEP_SVC_SLOT_IRQ, TEP_SVC_CNODE_BITS,
+                            seL4_CapInitThreadCNode, svc->irq_handler, seL4_WordBits,
+                            seL4_AllRights) != seL4_NoError) {
+            return "giving IRQ handler failed";
+        }
+    }
+    return NULL;
+}
+
 static const char *build(struct tep_service *svc, seL4_CPtr root_ep)
 {
     const seL4_CapRights_t send = seL4_CapRights_new(1, 0, 0, 1);   /* Write + GrantReply */
@@ -99,6 +155,11 @@ static const char *build(struct tep_service *svc, seL4_CPtr root_ep)
                         seL4_CapInitThreadCNode, svc->notify, seL4_WordBits,
                         seL4_CanWrite, TEP_SVC_EVENT_PING) != seL4_NoError) {
         return "minting ping cap failed";
+    }
+
+    err = give_device(svc);
+    if (err != NULL) {
+        return err;
     }
 
     /* Thread. */

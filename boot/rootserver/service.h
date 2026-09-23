@@ -7,6 +7,12 @@
  * task's endpoint, one for control messages and one registered as its fault
  * endpoint.
  *
+ * A service may also own one device: its MMIO page is mapped at
+ * TEP_SVC_DEVICE_BASE and its IRQ handler is placed in TEP_SVC_SLOT_IRQ, with
+ * the interrupt delivered as TEP_SVC_EVENT_IRQ on the service's notification.
+ * The root task keeps the original device frame and IRQ handler capabilities
+ * and gives each new instance of the service fresh copies.
+ *
  * Every kernel object of a service comes from its private pool, so stopping
  * a service revokes the pool: the kernel destroys all of it and zeroes the
  * memory before it is reused, and a restart starts from nothing.
@@ -40,6 +46,9 @@ struct tep_service {
     seL4_Word priority;
     seL4_Word pool_bits;    /* log2 bytes of private memory; 0 = default */
     int required;           /* tepOS is unhealthy without it */
+    seL4_Word perms;        /* TEP_PERM_* requests it may make to the root task */
+    seL4_Word dev_paddr;    /* device MMIO page, or 0 */
+    seL4_Word dev_irq;      /* device interrupt, or 0 */
 
     /* Protection domain (valid while STARTING/READY/FAILED). */
     enum tep_service_state state;
@@ -52,6 +61,8 @@ struct tep_service {
     seL4_CPtr vspace;
     seL4_CPtr notify;       /* the service's notification (original cap) */
     seL4_CPtr ping;         /* root's signal cap to it, badged TEP_SVC_EVENT_PING */
+    seL4_CPtr dev_frame;    /* root-owned device frame, kept across restarts */
+    seL4_CPtr irq_handler;  /* root-owned IRQ handler, kept across restarts */
 
     /* Lifecycle bookkeeping, owned by the manager. */
     seL4_Word state_ticks;  /* timer ticks spent in the current state */

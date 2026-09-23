@@ -23,8 +23,13 @@ IMAGE     := $(BOOT_DIR)/sel4-image.elf
 QEMU_MACHINE ?= virt,secure=off,virtualization=off,gic-version=2
 QEMU_CPU     ?= cortex-a53
 QEMU_MEM     ?= 1024
+# serial0 is the console; serial1 is the NXU mailbox link, a Unix socket that
+# NXU's QEMU connects to (see boot/include/tep/mailbox.h).
+TEP_MAILBOX_SOCK ?= /tmp/tepos-mailbox.sock
 QEMU_FLAGS   := -machine $(QEMU_MACHINE) -cpu $(QEMU_CPU) -m $(QEMU_MEM) \
-                -nographic -serial mon:stdio -kernel $(IMAGE) $(QEMU_EXTRA)
+                -nographic -serial mon:stdio \
+                -serial unix:$(TEP_MAILBOX_SOCK),server=on,wait=off \
+                -kernel $(IMAGE) $(QEMU_EXTRA)
 
 KERNEL_CMAKE_FLAGS := -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=gcc.cmake \
@@ -68,6 +73,17 @@ $(DIAG_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ip
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
 	    $(TEP_LIB_SRCS) boot/services/diag/main.c -o $@
 
+MAILBOX_SVC := $(BOOT_DIR)/mailboxsvc.elf
+MAILBOX_SRCS := boot/services/mailbox/main.c boot/services/mailbox/frame.c \
+    boot/services/mailbox/pl011.c
+
+$(MAILBOX_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
+                boot/include/tep/mailbox.h $(MAILBOX_SRCS) \
+                boot/services/mailbox/frame.h boot/services/mailbox/pl011.h
+	@mkdir -p $(BOOT_DIR)
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
+	    $(TEP_LIB_SRCS) $(MAILBOX_SRCS) -o $@
+
 ROOTSRV_SRCS := $(TEP_LIB_SRCS) boot/rootserver/main.c \
     boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
     boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c \
@@ -95,7 +111,8 @@ $(KERNEL): kernel
 libsel4-headers: $(BUILD_DIR)/build.ninja
 	cmake --build $(BUILD_DIR) --target sel4_generated
 
-$(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS) $(DIAG_SVC)
+$(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS) $(DIAG_SVC) \
+            $(MAILBOX_SVC) boot/include/tep/mailbox.h
 	@mkdir -p $(BOOT_DIR)
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -Wa,-I$(BOOT_DIR) \
 	    -T boot/lib/program.ld $(ROOTSRV_SRCS) -o $@

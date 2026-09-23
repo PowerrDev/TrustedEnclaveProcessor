@@ -16,6 +16,7 @@ static struct tep_service *svcs;
 static seL4_Word nsvcs;
 static seL4_CPtr root_ep;
 static int watchdog;
+static seL4_Word boot_id;
 static int all_ready_once;
 static enum tep_health health = TEP_HEALTH_STARTING;
 
@@ -94,8 +95,10 @@ static void start(struct tep_service *svc)
     tep_puts("\n");
 }
 
-void tep_manager_init(struct tep_service *services, seL4_Word n, seL4_CPtr ep, int have_timer)
+void tep_manager_init(struct tep_service *services, seL4_Word n, seL4_CPtr ep,
+                      int have_timer, seL4_Word id)
 {
+    boot_id = id;
     svcs = services;
     nsvcs = n;
     root_ep = ep;
@@ -175,6 +178,38 @@ static enum tep_status check_message(seL4_MessageInfo_t info, seL4_Word len)
     return TEP_STATUS_OK;
 }
 
+static seL4_Word wire_state(enum tep_service_state state)
+{
+    switch (state) {
+    case TEP_SVC_STARTING:
+        return TEP_MB_SVC_STARTING;
+    case TEP_SVC_READY:
+        return TEP_MB_SVC_READY;
+    case TEP_SVC_FAILED:
+        return TEP_MB_SVC_FAILED;
+    case TEP_SVC_DISABLED:
+        return TEP_MB_SVC_DISABLED;
+    default:
+        return TEP_MB_SVC_STOPPED;
+    }
+}
+
+/* Answer TEP_IPC_HEALTH with seL4_Reply. The request was already checked. */
+static void reply_health(void)
+{
+    seL4_Word n = nsvcs < TEP_IPC_MAX_SERVICES ? nsvcs : TEP_IPC_MAX_SERVICES;
+
+    seL4_SetMR(0, TEP_IPC_VERSION);
+    seL4_SetMR(1, boot_id);
+    seL4_SetMR(2, health);
+    seL4_SetMR(3, n);
+    for (seL4_Word i = 0; i < n; i++) {
+        seL4_Word restarts = svcs[i].restarts > 0xff ? 0xff : svcs[i].restarts;
+        seL4_SetMR(4 + i, (svcs[i].id & 0xff) | wire_state(svcs[i].state) << 8 | restarts << 16);
+    }
+    seL4_Reply(seL4_MessageInfo_new(TEP_STATUS_OK, 0, 0, TEP_IPC_HEALTH_REPLY_LEN(n)));
+}
+
 /* Every path replies exactly once with seL4_Reply, which never blocks. */
 static void handle_control(struct tep_service *svc, seL4_MessageInfo_t info)
 {
@@ -182,6 +217,21 @@ static void handle_control(struct tep_service *svc, seL4_MessageInfo_t info)
     seL4_Word label = seL4_MessageInfo_get_label(info);
 
     switch (label) {
+    case TEP_IPC_HEALTH:
+        status = check_message(info, TEP_IPC_HEALTH_LEN);
+        if (status == TEP_STATUS_OK && !(svc->perms & TEP_PERM_HEALTH)) {
+            status = TEP_STATUS_DENIED;
+        }
+        if (status == TEP_STATUS_OK && svc->state != TEP_SVC_READY) {
+            status = TEP_STATUS_DENIED;
+        }
+        if (status == TEP_STATUS_OK) {
+            reply_health();
+            return;
+        }
+        /* A refused query is not a protocol violation worth a restart. */
+        seL4_Reply(seL4_MessageInfo_new(status, 0, 0, 0));
+        return;
     case TEP_IPC_READY:
         status = check_message(info, TEP_IPC_READY_LEN);
         if (status == TEP_STATUS_OK && svc->state != TEP_SVC_STARTING) {

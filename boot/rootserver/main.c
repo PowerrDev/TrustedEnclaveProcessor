@@ -29,9 +29,16 @@ static seL4_CPtr event_ntfn;
 static seL4_CPtr root_ep;
 
 extern const char diag_elf_start[], diag_elf_end[];
+extern const char mailbox_elf_start[], mailbox_elf_end[];
+
+/* QEMU virt: the second pl011 (serial1) is the NXU mailbox link. */
+#define MAILBOX_UART_PADDR 0x9040000UL
+#define MAILBOX_UART_IRQ   (32 + 8)
 
 static struct tep_service services[] = {
     { .name = "diag", .id = 1, .priority = 200, .pool_bits = 18, .required = 1 },
+    { .name = "mailbox", .id = 2, .priority = 190, .pool_bits = 18, .required = 1,
+      .perms = TEP_PERM_HEALTH, .dev_paddr = MAILBOX_UART_PADDR, .dev_irq = MAILBOX_UART_IRQ },
 };
 
 #define NSERVICES (sizeof(services) / sizeof(services[0]))
@@ -160,7 +167,10 @@ int main(seL4_BootInfo *bi)
 
     services[0].image = diag_elf_start;
     services[0].image_size = diag_elf_end - diag_elf_start;
-    tep_manager_init(services, NSERVICES, root_ep, err == NULL);
+    services[1].image = mailbox_elf_start;
+    services[1].image_size = mailbox_elf_end - mailbox_elf_start;
+    /* Boot id for the mailbox HELLO: the RTC seconds at boot, 0 without it. */
+    tep_manager_init(services, NSERVICES, root_ep, err == NULL, err == NULL ? tep_timer_seconds() : 0);
     tep_log("service manager initialized");
     tep_manager_start_all();
 
