@@ -1,5 +1,7 @@
 /*
- * Root task entry. The kernel starts us with x0 = seL4_BootInfo pointer.
+ * Program entry for the root task and services. x0/x1 are passed to main():
+ * the kernel starts the root task with x0 = seL4_BootInfo pointer; the root
+ * task starts services with arguments of its choosing.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */

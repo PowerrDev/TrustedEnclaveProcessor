@@ -15,7 +15,7 @@
 /* Referenced by libsel4's seL4_GetIPCBuffer()/seL4_SetMR() etc. */
 __thread seL4_IPCBuffer *__sel4_ipc_buffer;
 
-/* TLS image bounds, from rootserver.ld. */
+/* TLS image bounds, from program.ld. */
 extern char __tdata_start[], __tdata_end[], __tbss_start[], __tbss_end[];
 
 #define TLS_TCB_SIZE  16
@@ -71,7 +71,7 @@ static int tls_init(void)
     seL4_Word image_size = __tbss_end - __tdata_start;
     seL4_Word tp = (seL4_Word)tls_area;
 
-    /* .tbss must directly follow .tdata (see rootserver.ld). */
+    /* .tbss must directly follow .tdata (see program.ld). */
     if ((seL4_Word)__tbss_start < (seL4_Word)__tdata_end || image_size > TLS_AREA_SIZE - TLS_TCB_SIZE) {
         return -1;
     }
