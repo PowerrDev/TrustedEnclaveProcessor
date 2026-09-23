@@ -30,10 +30,18 @@ QEMU_MEM     ?= 1024
 # socket client: QEMU 11.1 aborts a reconnecting socket client whenever a
 # connection attempt fails.
 TEP_MAILBOX_SOCK ?= /tmp/tepos-mailbox.sock
+
+# tepOS's devices beyond the serial ports, each on a fixed virtio-mmio slot so
+# a service's device page (8 slots of 0x200 bytes) holds only its own device:
+# slot 0 (0x0a000000) virtio-rng for the CryptoService. Tools that boot tepOS
+# themselves (NXU's tools/with_tepos.sh) read this with `make -s qemu-devices`.
+TEP_QEMU_DEVICES := -global virtio-mmio.force-legacy=false \
+                    -device virtio-rng-device,bus=virtio-mmio-bus.0
+
 QEMU_FLAGS   := -machine $(QEMU_MACHINE) -cpu $(QEMU_CPU) -m $(QEMU_MEM) \
                 -nographic -serial mon:stdio \
                 -serial unix:$(TEP_MAILBOX_SOCK),server=on,wait=off \
-                -kernel $(IMAGE) $(QEMU_EXTRA)
+                $(TEP_QEMU_DEVICES) -kernel $(IMAGE) $(QEMU_EXTRA)
 
 KERNEL_CMAKE_FLAGS := -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=gcc.cmake \
@@ -88,6 +96,16 @@ $(MAILBOX_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
 	    $(TEP_LIB_SRCS) $(MAILBOX_SRCS) -o $@
 
+CRYPTO_SVC := $(BOOT_DIR)/cryptosvc.elf
+CRYPTO_SVC_SRCS := boot/services/crypto/main.c boot/lib/sha256.c boot/lib/hmac_drbg.c \
+    boot/lib/virtio_mmio.c
+
+$(CRYPTO_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
+               $(CRYPTO_SVC_SRCS) boot/lib/sha256.h boot/lib/hmac_drbg.h boot/lib/virtio_mmio.h
+	@mkdir -p $(BOOT_DIR)
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
+	    $(TEP_LIB_SRCS) $(CRYPTO_SVC_SRCS) -o $@
+
 ROOTSRV_SRCS := $(TEP_LIB_SRCS) boot/rootserver/main.c \
     boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
     boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c \
@@ -98,7 +116,7 @@ ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
     boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h \
     boot/rootserver/timer.h boot/rootserver/manager.h
 
-.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto
+.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto qemu-devices
 
 all: image
 
@@ -116,7 +134,7 @@ libsel4-headers: $(BUILD_DIR)/build.ninja
 	cmake --build $(BUILD_DIR) --target sel4_generated
 
 $(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS) $(DIAG_SVC) \
-            $(MAILBOX_SVC) boot/include/tep/mailbox.h
+            $(MAILBOX_SVC) $(CRYPTO_SVC) boot/include/tep/mailbox.h
 	@mkdir -p $(BOOT_DIR)
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -Wa,-I$(BOOT_DIR) \
 	    -T boot/lib/program.ld $(ROOTSRV_SRCS) -o $@
@@ -150,6 +168,9 @@ test-crypto: $(CRYPTO_SRCS) boot/lib/sha256.h boot/lib/hmac_drbg.h
 	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -fsanitize=address,undefined \
 	    -Iboot/lib -Iboot/third_party/monocypher $(CRYPTO_SRCS) -o $(BUILD_DIR)/crypto_test
 	$(BUILD_DIR)/crypto_test
+
+qemu-devices:
+	@echo $(TEP_QEMU_DEVICES)
 
 clean-boot:
 	rm -rf $(BOOT_DIR)

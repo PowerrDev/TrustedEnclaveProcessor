@@ -15,3 +15,8 @@ diag_elf_end:
 mailbox_elf_start:
     .incbin "mailboxsvc.elf"
 mailbox_elf_end:
+    .balign 8
+    .global crypto_elf_start, crypto_elf_end
+crypto_elf_start:
+    .incbin "cryptosvc.elf"
+crypto_elf_end:
