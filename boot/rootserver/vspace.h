@@ -9,6 +9,8 @@
 
 #include <sel4/sel4.h>
 
+#include "untyped.h"
+
 /* Window for root task dynamic memory, well clear of the image at 0x400000. */
 #define TEP_HEAP_BASE 0x10000000UL
 #define TEP_HEAP_SIZE 0x10000000UL
@@ -19,11 +21,12 @@
 int tep_vspace_init(void);
 
 /*
- * Map a frame into any VSpace, creating page tables as needed (their caps
- * stay in the root CNode). Returns 0 on success.
+ * Map a frame into any VSpace, creating page tables as needed with alloc
+ * (their caps stay in the root CNode). Returns 0 on success.
  */
 int tep_map_frame(seL4_CPtr vspace, seL4_CPtr frame, seL4_Word vaddr,
-                  seL4_CapRights_t rights, seL4_ARM_VMAttributes attr);
+                  seL4_CapRights_t rights, seL4_ARM_VMAttributes attr,
+                  tep_alloc_fn alloc, void *ctx);
 
 /*
  * Map npages zeroed, read/write, non-executable pages and return their base

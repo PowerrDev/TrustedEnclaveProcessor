@@ -66,7 +66,8 @@ static seL4_Word seg_end(const Elf64_Phdr *ph)
     return (ph->p_vaddr + ph->p_memsz + PAGE_MASK) & ~PAGE_MASK;
 }
 
-static const char *load_segment(const unsigned char *img, const Elf64_Phdr *ph, seL4_CPtr vspace)
+static const char *load_segment(const unsigned char *img, const Elf64_Phdr *ph, seL4_CPtr vspace,
+                                tep_alloc_fn alloc, void *ctx)
 {
     seL4_CapRights_t rights = (ph->p_flags & PF_W) ? seL4_ReadWrite : seL4_CanRead;
     seL4_ARM_VMAttributes attr = seL4_ARM_Default_VMAttributes;
@@ -76,7 +77,7 @@ static const char *load_segment(const unsigned char *img, const Elf64_Phdr *ph, 
     }
 
     for (seL4_Word va = ph->p_vaddr; va < seg_end(ph); va += PAGE_SIZE) {
-        seL4_CPtr frame = tep_object_alloc(seL4_ARM_SmallPageObject, 0);
+        seL4_CPtr frame = alloc(ctx, seL4_ARM_SmallPageObject, 0);
         if (frame == seL4_CapNull) {
             return "out of memory for service frame";
         }
@@ -89,7 +90,8 @@ static const char *load_segment(const unsigned char *img, const Elf64_Phdr *ph, 
                 n = PAGE_SIZE;
             }
             if (tep_map_frame(seL4_CapInitThreadVSpace, frame, TEP_SCRATCH_VADDR, seL4_ReadWrite,
-                              seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever) != 0) {
+                              seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever,
+                              tep_object_alloc_fn, NULL) != 0) {
                 return "scratch map failed";
             }
             memcpy((void *)TEP_SCRATCH_VADDR, img + ph->p_offset + off, n);
@@ -102,14 +104,15 @@ static const char *load_segment(const unsigned char *img, const Elf64_Phdr *ph, 
             }
         }
 
-        if (tep_map_frame(vspace, frame, va, rights, attr) != 0) {
+        if (tep_map_frame(vspace, frame, va, rights, attr, alloc, ctx) != 0) {
             return "service map failed";
         }
     }
     return NULL;
 }
 
-const char *tep_elf_load(const void *image, seL4_Word size, seL4_CPtr vspace, seL4_Word *entry)
+const char *tep_elf_load(const void *image, seL4_Word size, seL4_CPtr vspace,
+                         tep_alloc_fn alloc, void *ctx, seL4_Word *entry)
 {
     const unsigned char *img = image;
     const Elf64_Ehdr *eh = image;
@@ -157,7 +160,7 @@ const char *tep_elf_load(const void *image, seL4_Word size, seL4_CPtr vspace, se
     }
 
     for (int i = 0; i < nload; i++) {
-        err = load_segment(img, load[i], vspace);
+        err = load_segment(img, load[i], vspace, alloc, ctx);
         if (err != NULL) {
             return err;
         }

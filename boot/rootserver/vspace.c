@@ -25,7 +25,8 @@ int tep_vspace_init(void)
 }
 
 int tep_map_frame(seL4_CPtr vspace, seL4_CPtr frame, seL4_Word vaddr,
-                  seL4_CapRights_t rights, seL4_ARM_VMAttributes attr)
+                  seL4_CapRights_t rights, seL4_ARM_VMAttributes attr,
+                  tep_alloc_fn alloc, void *ctx)
 {
     for (int i = 0; i <= MAX_PT_LEVELS; i++) {
         seL4_Error err = seL4_ARM_Page_Map(frame, vspace, vaddr, rights, attr);
@@ -36,7 +37,7 @@ int tep_map_frame(seL4_CPtr vspace, seL4_CPtr frame, seL4_Word vaddr,
             return -1;
         }
 
-        seL4_CPtr pt = tep_object_alloc(seL4_ARM_PageTableObject, 0);
+        seL4_CPtr pt = alloc(ctx, seL4_ARM_PageTableObject, 0);
         if (pt == seL4_CapNull) {
             return -1;
         }
@@ -60,7 +61,8 @@ void *tep_pages_alloc(seL4_Word npages)
         if (frame == seL4_CapNull ||
             tep_map_frame(seL4_CapInitThreadVSpace, frame, base + (i << seL4_PageBits),
                           seL4_ReadWrite,
-                          seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever) != 0) {
+                          seL4_ARM_Default_VMAttributes | seL4_ARM_ExecuteNever,
+                          tep_object_alloc_fn, NULL) != 0) {
             /* Already-mapped pages stay behind heap_next and are not reused. */
             heap_next = base + ((i + 1) << seL4_PageBits);
             return NULL;
