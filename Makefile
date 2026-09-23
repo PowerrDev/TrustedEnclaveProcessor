@@ -56,14 +56,25 @@ SEL4_INCLUDES := -Ilibsel4/include -Ilibsel4/arch_include/arm \
     -I$(BUILD_DIR)/gen_config
 
 TEP_INCLUDES := -Iboot/include -Iboot/lib
-TEP_LIB_SRCS := boot/lib/crt0.S boot/lib/console.c boot/lib/tls.c
-TEP_LIB_HDRS := boot/lib/console.h boot/lib/tls.h boot/lib/program.ld
+TEP_LIB_SRCS := boot/lib/crt0.S boot/lib/console.c boot/lib/tls.c boot/lib/string.c
+TEP_LIB_HDRS := boot/lib/console.h boot/lib/tls.h boot/lib/mem.h boot/lib/program.ld
+
+# Services: one ELF each, embedded into the root task (boot/rootserver/services.S).
+DIAG_SVC := $(BOOT_DIR)/diagsvc.elf
+
+$(DIAG_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
+             boot/services/diag/main.c
+	@mkdir -p $(BOOT_DIR)
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
+	    $(TEP_LIB_SRCS) boot/services/diag/main.c -o $@
 
 ROOTSRV_SRCS := $(TEP_LIB_SRCS) boot/rootserver/main.c \
     boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
-    boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c
+    boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c \
+    boot/rootserver/elf.c boot/rootserver/service.c boot/rootserver/services.S
 ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
-    boot/rootserver/cspace.h boot/rootserver/untyped.h boot/rootserver/vspace.h
+    boot/rootserver/cspace.h boot/rootserver/untyped.h boot/rootserver/vspace.h \
+    boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h
 
 .PHONY: all kernel libsel4-headers image run debug clean-boot
 
@@ -82,10 +93,10 @@ $(KERNEL): kernel
 libsel4-headers: $(BUILD_DIR)/build.ninja
 	cmake --build $(BUILD_DIR) --target sel4_generated
 
-$(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS)
+$(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS) $(DIAG_SVC)
 	@mkdir -p $(BOOT_DIR)
-	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
-	    $(ROOTSRV_SRCS) -o $@
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -Wa,-I$(BOOT_DIR) \
+	    -T boot/lib/program.ld $(ROOTSRV_SRCS) -o $@
 
 $(IMAGE): kernel $(ROOTSRV) boot/loader/start.S boot/loader/loader.c \
           boot/loader/blobs.S boot/loader/loader.ld
