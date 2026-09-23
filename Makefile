@@ -23,8 +23,12 @@ IMAGE     := $(BOOT_DIR)/sel4-image.elf
 QEMU_MACHINE ?= virt,secure=off,virtualization=off,gic-version=2
 QEMU_CPU     ?= cortex-a53
 QEMU_MEM     ?= 1024
-# serial0 is the console; serial1 is the NXU mailbox link, a Unix socket that
-# NXU's QEMU connects to (see boot/include/tep/mailbox.h).
+# serial0 is the console; serial1 is the NXU mailbox link: a Unix socket this
+# QEMU listens on. NXU's QEMU listens on its own socket, and
+# tools/mailbox_link.py joins the two like a serial cable, reconnecting when
+# either machine restarts (see boot/include/tep/mailbox.h). Neither QEMU is a
+# socket client: QEMU 11.1 aborts a reconnecting socket client whenever a
+# connection attempt fails.
 TEP_MAILBOX_SOCK ?= /tmp/tepos-mailbox.sock
 QEMU_FLAGS   := -machine $(QEMU_MACHINE) -cpu $(QEMU_CPU) -m $(QEMU_MEM) \
                 -nographic -serial mon:stdio \

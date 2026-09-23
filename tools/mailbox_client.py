@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 #
 # Host-side client for the NXU <-> tepOS mailbox (boot/include/tep/mailbox.h).
-# Connects to the Unix socket behind tepOS's serial1, like NXU's QEMU does.
+# Stands in for NXU: connects to the Unix socket behind tepOS's serial1, as
+# tools/mailbox_link.py does (stop the link first; one peer at a time).
 #
 #   tools/mailbox_client.py hello|health     one request, print the response
 #   tools/mailbox_client.py --selftest       protocol conformance checks
@@ -148,7 +149,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("command", nargs="?", choices=["hello", "health"], default="hello")
     ap.add_argument("--socket", default="/tmp/tepos-mailbox.sock")
-    ap.add_argument("--timeout", type=float, default=2.0)
+    ap.add_argument("--timeout", type=float, default=2.0, help="seconds to wait for each response")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
