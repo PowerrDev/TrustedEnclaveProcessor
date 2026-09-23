@@ -1,7 +1,9 @@
 /*
  * Host test for tepOS's cryptographic primitives: boot/lib/sha256.c against
- * the FIPS 180-4 / NIST and RFC 4231 vectors, and the vendored Monocypher's
- * Ed25519 (RFC 8032 test 1) and XChaCha20-Poly1305 as tepOS uses them.
+ * the FIPS 180-4 / NIST and RFC 4231 vectors, boot/lib/hmac_drbg.c against
+ * NIST CAVP HMAC_DRBG (SHA-256, no reseed) vectors, and the vendored
+ * Monocypher's Ed25519 (RFC 8032 test 1) and XChaCha20-Poly1305 as tepOS
+ * uses them.
  * Built and run by `make test-crypto`.
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -10,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "hmac_drbg.h"
 #include "sha256.h"
 #include "monocypher.h"
 #include "monocypher-ed25519.h"
@@ -93,6 +96,53 @@ static void hmac_vectors(void)
     check("HMAC-SHA-256 RFC 4231 case 6 (long key)", mac, "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54", 32);
 }
 
+/*
+ * CAVP procedure (drbgvectors_no_reseed, HMAC_DRBG.rsp, [SHA-256]): instantiate,
+ * generate 1024 bits and discard, generate 1024 bits and compare.
+ */
+static void drbg_case(const char *name, const char *entropy_hex, const char *nonce_hex,
+                      const char *pers_hex, const char *add1_hex, const char *add2_hex,
+                      const char *returned_hex)
+{
+    uint8_t entropy[32], nonce[16], pers[32], add1[32], add2[32], out[128];
+    size_t pers_n = strlen(pers_hex) / 2, add1_n = strlen(add1_hex) / 2, add2_n = strlen(add2_hex) / 2;
+    struct hmac_drbg d;
+
+    hex(entropy_hex, entropy, 32);
+    hex(nonce_hex, nonce, 16);
+    hex(pers_hex, pers, pers_n);
+    hex(add1_hex, add1, add1_n);
+    hex(add2_hex, add2, add2_n);
+
+    hmac_drbg_instantiate(&d, entropy, 32, nonce, 16, pers, pers_n);
+    hmac_drbg_generate(&d, out, sizeof(out), add1, add1_n);
+    hmac_drbg_generate(&d, out, sizeof(out), add2, add2_n);
+    check(name, out, returned_hex, sizeof(out));
+}
+
+static void drbg_vectors(void)
+{
+    drbg_case("HMAC_DRBG CAVP SHA-256 count 0", 
+              "ca851911349384bffe89de1cbdc46e6831e44d34a4fb935ee285dd14b71a7488",
+              "659ba96c601dc69fc902940805ec0ca8", "", "", "",
+              "e528e9abf2dece54d47c7e75e5fe302149f817ea9fb4bee6f4199697d04d5b89d54fbb978a15b5c443c9ec21036d2460"
+              "b6f73ebad0dc2aba6e624abf07745bc107694bb7547bb0995f70de25d6b29e2d3011bb19d27676c07162c8b5ccde0668"
+              "961df86803482cb37ed6d5c0bb8d50cf1f50d476aa0458bdaba806f48be9dcb8");
+    drbg_case("HMAC_DRBG CAVP SHA-256 pers+additional",
+              "5d3286bc53a258a53ba781e2c4dcd79a790e43bbe0e89fb3eed39086be34174b",
+              "c5422294b7318952ace7055ab7570abf",
+              "2dba094d008e150d51c4135bb2f03dcde9cbf3468a12908a1b025c120c985b9d",
+              "793a7ef8f6f0482beac542bb785c10f8b7b406a4de92667ab168ecc2cf7573c6",
+              "2238cdb4e23d629fe0c2a83dd8d5144ce1a6229ef41dabe2a99ff722e510b530",
+              "d04678198ae7e1aeb435b45291458ffde0891560748b43330eaf866b5a6385e74c6fa5a5a44bdb284d436e98d244018d"
+              "6acedcdfa2e9f499d8089e4db86ae89a6ab2d19cb705e2f048f97fb597f04106a1fa6a1416ad3d859118e079a0c319eb"
+              "95686f4cbcce3b5101c7a0b010ef029c4ef6d06cdfac97efb9773891688c37cf");
+
+    struct hmac_drbg d = { 0 };
+    uint8_t out[16];
+    check_true("HMAC_DRBG refuses before instantiate", hmac_drbg_generate(&d, out, sizeof(out), NULL, 0) != 0);
+}
+
 static void ed25519_vector(void)
 {
     uint8_t seed[32], sk[64], pk[32], sig[64];
@@ -131,6 +181,7 @@ int main(void)
 {
     sha256_vectors();
     hmac_vectors();
+    drbg_vectors();
     ed25519_vector();
     aead_roundtrip();
     printf("crypto_test: %s\n", failures == 0 ? "passed" : "FAILED");
