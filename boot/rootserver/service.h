@@ -50,6 +50,8 @@ struct tep_service {
     seL4_Word dev_paddr;    /* device MMIO page, or 0 */
     seL4_Word dev_irq;      /* device interrupt, or 0 */
     int dma;                /* give it one DMA page (TEP_SVC_DMA_BASE) */
+    int serves;             /* has an endpoint other services may call */
+    seL4_Word uses;         /* BIT(server id) of each server it may call */
 
     /* Protection domain (valid while STARTING/READY/FAILED). */
     enum tep_service_state state;
@@ -62,6 +64,7 @@ struct tep_service {
     seL4_CPtr vspace;
     seL4_CPtr notify;       /* the service's notification (original cap) */
     seL4_CPtr ping;         /* root's signal cap to it, badged TEP_SVC_EVENT_PING */
+    seL4_CPtr endpoint;     /* a server's endpoint (original cap), this instance */
     seL4_CPtr dev_frame;    /* root-owned device frame, kept across restarts */
     seL4_CPtr irq_handler;  /* root-owned IRQ handler, kept across restarts */
     seL4_Word dma_paddr;    /* physical address of the DMA page, this instance */
@@ -87,6 +90,14 @@ void tep_service_fail(struct tep_service *svc, const char *why);
 
 /* Destroy the protection domain and reclaim its memory and slots. */
 void tep_service_stop(struct tep_service *svc);
+
+/*
+ * Give `client` a badged send capability to `server`'s endpoint, in
+ * TEP_SVC_SLOT_SERVER(server id), if it is allowed to use that server and
+ * both are running. Called whenever either of them (re)starts; the old
+ * capability went away with the old instance.
+ */
+void tep_service_connect(struct tep_service *client, const struct tep_service *server);
 
 /* Ask the service to answer with PONG. Never blocks. */
 void tep_service_ping(struct tep_service *svc);

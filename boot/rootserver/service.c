@@ -178,6 +178,14 @@ static const char *build(struct tep_service *svc, seL4_CPtr root_ep)
         return err;
     }
 
+    if (svc->serves) {
+        svc->endpoint = svc_alloc(svc, seL4_EndpointObject, 0);
+        if (svc->endpoint == seL4_CapNull ||
+            give_cap(svc, TEP_SVC_SLOT_ENDPOINT, svc->endpoint, seL4_CanRead, 0) != seL4_NoError) {
+            return "server endpoint setup failed";
+        }
+    }
+
     /* Thread. */
     svc->tcb = svc_alloc(svc, seL4_TCBObject, 0);
     if (svc->tcb == seL4_CapNull) {
@@ -190,6 +198,10 @@ static const char *build(struct tep_service *svc, seL4_CPtr root_ep)
     }
     if (seL4_TCB_SetPriority(svc->tcb, seL4_CapInitThreadTCB, svc->priority) != seL4_NoError) {
         return "TCB priority failed";
+    }
+    /* A server waits on its endpoint; binding lets pings and IRQs reach it there too. */
+    if (svc->serves && seL4_TCB_BindNotification(svc->tcb, svc->notify) != seL4_NoError) {
+        return "binding server notification failed";
     }
 
     seL4_UserContext regs;
@@ -254,9 +266,31 @@ void tep_service_stop(struct tep_service *svc)
         tep_cslot_free(svc->slots[i]);
     }
     svc->nslots = 0;
-    svc->tcb = svc->cnode = svc->vspace = svc->notify = svc->ping = seL4_CapNull;
+    svc->tcb = svc->cnode = svc->vspace = svc->notify = svc->ping = svc->endpoint = seL4_CapNull;
     svc->state = TEP_SVC_STOPPED;
     svc->state_ticks = 0;
+}
+
+void tep_service_connect(struct tep_service *client, const struct tep_service *server)
+{
+    const seL4_CapRights_t send = seL4_CapRights_new(1, 0, 0, 1);   /* Write + GrantReply */
+    seL4_Word slot = TEP_SVC_SLOT_SERVER(server->id);
+
+    if (client == server || !(client->uses & BIT(server->id)) ||
+        client->cnode == seL4_CapNull || server->endpoint == seL4_CapNull ||
+        slot >= BIT(TEP_SVC_CNODE_BITS)) {
+        return;
+    }
+    seL4_CNode_Delete(client->cnode, slot, TEP_SVC_CNODE_BITS);
+    if (seL4_CNode_Mint(client->cnode, slot, TEP_SVC_CNODE_BITS,
+                        seL4_CapInitThreadCNode, server->endpoint, seL4_WordBits,
+                        send, TEP_CLIENT_BADGE(client->id)) != seL4_NoError) {
+        tep_log_start();
+        tep_puts(client->name);
+        tep_puts(": could not connect to ");
+        tep_puts(server->name);
+        tep_puts("\n");
+    }
 }
 
 void tep_service_ping(struct tep_service *svc)

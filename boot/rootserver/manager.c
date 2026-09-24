@@ -93,6 +93,12 @@ static void start(struct tep_service *svc)
     tep_puts(": started, service id ");
     tep_putdec(svc->id);
     tep_puts("\n");
+
+    /* Wire it to the servers it uses, and to the clients that use it. */
+    for (seL4_Word i = 0; i < nsvcs; i++) {
+        tep_service_connect(svc, &svcs[i]);
+        tep_service_connect(&svcs[i], svc);
+    }
 }
 
 void tep_manager_init(struct tep_service *services, seL4_Word n, seL4_CPtr ep,

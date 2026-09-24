@@ -12,6 +12,10 @@
  * stops the service: tepOS then reports it failed and nothing downstream
  * gets random numbers (fail closed).
  *
+ * Other services call it on its endpoint (<tep/services.h>): TEP_CRYPTO_RANDOM
+ * returns DRBG output, TEP_CRYPTO_SHA256 hashes up to TEP_CRYPTO_SHA256_MAX
+ * bytes.
+ *
  * Started with x0 = IPC buffer, x1 = service id, x2 = DMA page physical
  * address, x3 = device register offset in the device page (<tep/ipc.h>).
  *
@@ -20,9 +24,11 @@
 
 #include <sel4/sel4.h>
 #include <tep/ipc.h>
+#include <tep/services.h>
 
 #include "console.h"
 #include "hmac_drbg.h"
+#include "ipc_bytes.h"
 #include "sha256.h"
 #include "tls.h"
 #include "virtio_mmio.h"
@@ -163,8 +169,7 @@ static void seed_drbg(void)
     secure_wipe(seed, sizeof(seed));
 }
 
-/* Random bytes for other services (used by the request interface). */
-int crypto_random(void *out, size_t n)
+static int crypto_random(void *out, size_t n)
 {
     if (drbg.reseed_counter >= RESEED_INTERVAL) {
         uint8_t fresh[ENTROPY_BYTES];
@@ -176,6 +181,54 @@ int crypto_random(void *out, size_t n)
         secure_wipe(fresh, sizeof(fresh));
     }
     return hmac_drbg_generate(&drbg, out, n, NULL, 0);
+}
+
+static seL4_MessageInfo_t status_reply(enum tep_status status)
+{
+    return seL4_MessageInfo_new(status, 0, 0, 0);
+}
+
+/* One request from another service; the reply is sent by the caller. */
+static seL4_MessageInfo_t handle_request(seL4_MessageInfo_t info)
+{
+    seL4_Word len = seL4_MessageInfo_get_length(info);
+    uint8_t buf[TEP_CRYPTO_SHA256_MAX];
+
+    if (seL4_MessageInfo_get_extraCaps(info) != 0) {
+        return status_reply(TEP_STATUS_BAD_LENGTH);
+    }
+
+    switch (seL4_MessageInfo_get_label(info)) {
+    case TEP_CRYPTO_RANDOM: {
+        seL4_Word n = seL4_GetMR(0);
+        if (len != 1) {
+            return status_reply(TEP_STATUS_BAD_LENGTH);
+        }
+        if (n == 0 || n > TEP_CRYPTO_RANDOM_MAX) {
+            return status_reply(TEP_STATUS_BAD_LENGTH);
+        }
+        if (crypto_random(buf, n) != 0) {
+            secure_wipe(buf, sizeof(buf));
+            return status_reply(TEP_STATUS_UNAVAILABLE);
+        }
+        seL4_SetMR(0, n);
+        seL4_Word words = ipc_put_bytes(1, buf, n);
+        secure_wipe(buf, sizeof(buf));
+        return seL4_MessageInfo_new(TEP_STATUS_OK, 0, 0, 1 + words);
+    }
+    case TEP_CRYPTO_SHA256: {
+        seL4_Word n = seL4_GetMR(0);
+        uint8_t digest[SHA256_DIGEST_SIZE];
+        if (n == 0 || n > TEP_CRYPTO_SHA256_MAX || len != 1 + TEP_BYTES_WORDS(n)) {
+            return status_reply(TEP_STATUS_BAD_LENGTH);
+        }
+        ipc_get_bytes(1, buf, n);
+        sha256(buf, n, digest);
+        return seL4_MessageInfo_new(TEP_STATUS_OK, 0, 0, ipc_put_bytes(0, digest, sizeof(digest)));
+    }
+    default:
+        return status_reply(TEP_STATUS_BAD_LABEL);
+    }
 }
 
 static void call_root_or_fail(seL4_Word label, seL4_Word len, const char *what)
@@ -229,11 +282,18 @@ int main(seL4_Word ipc_buffer, seL4_Word id, seL4_Word dma_paddr, seL4_Word dev_
     seL4_SetMR(0, TEP_IPC_VERSION);
     call_root_or_fail(TEP_IPC_READY, TEP_IPC_READY_LEN, "root task rejected READY");
 
-    for (;;) {
-        seL4_Word events;
+    tep_log("serving random and SHA-256 requests");
 
-        seL4_Wait(TEP_SVC_SLOT_NOTIFY, &events);
-        if (events & TEP_SVC_EVENT_PING) {
+    for (;;) {
+        seL4_Word badge;
+        seL4_MessageInfo_t info = seL4_Recv(TEP_SVC_SLOT_ENDPOINT, &badge);
+
+        if (badge & TEP_BADGE_CLIENT) {
+            /* seL4_Reply before anything else: it never blocks, and leaves no reply pending. */
+            seL4_Reply(handle_request(info));
+            continue;
+        }
+        if (badge & TEP_SVC_EVENT_PING) {
             pongs++;
             seL4_SetMR(0, TEP_IPC_VERSION);
             seL4_SetMR(1, pongs);

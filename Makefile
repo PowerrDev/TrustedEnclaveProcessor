@@ -73,7 +73,7 @@ SEL4_INCLUDES := -Ilibsel4/include -Ilibsel4/arch_include/arm \
     -I$(BUILD_DIR)/gen_config
 
 TEP_INCLUDES := -Iboot/include -Iboot/lib
-TEP_LIB_SRCS := boot/lib/crt0.S boot/lib/console.c boot/lib/tls.c boot/lib/string.c
+TEP_LIB_SRCS := boot/lib/crt0.S boot/lib/console.c boot/lib/tls.c boot/lib/string.c boot/lib/assert.c
 TEP_LIB_HDRS := boot/lib/console.h boot/lib/tls.h boot/lib/mem.h boot/lib/program.ld
 
 # Services: one ELF each, embedded into the root task (boot/rootserver/services.S).
@@ -87,24 +87,37 @@ $(DIAG_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ip
 
 MAILBOX_SVC := $(BOOT_DIR)/mailboxsvc.elf
 MAILBOX_SRCS := boot/services/mailbox/main.c boot/services/mailbox/frame.c \
-    boot/services/mailbox/pl011.c
+    boot/services/mailbox/pl011.c boot/lib/ipc_bytes.c
 
 $(MAILBOX_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
-                boot/include/tep/mailbox.h $(MAILBOX_SRCS) \
-                boot/services/mailbox/frame.h boot/services/mailbox/pl011.h
+                boot/include/tep/mailbox.h boot/include/tep/services.h $(MAILBOX_SRCS) \
+                boot/services/mailbox/frame.h boot/services/mailbox/pl011.h boot/lib/ipc_bytes.h
 	@mkdir -p $(BOOT_DIR)
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
 	    $(TEP_LIB_SRCS) $(MAILBOX_SRCS) -o $@
 
 CRYPTO_SVC := $(BOOT_DIR)/cryptosvc.elf
 CRYPTO_SVC_SRCS := boot/services/crypto/main.c boot/lib/sha256.c boot/lib/hmac_drbg.c \
-    boot/lib/virtio_mmio.c
+    boot/lib/virtio_mmio.c boot/lib/ipc_bytes.c
 
 $(CRYPTO_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
-               $(CRYPTO_SVC_SRCS) boot/lib/sha256.h boot/lib/hmac_drbg.h boot/lib/virtio_mmio.h
+               $(CRYPTO_SVC_SRCS) boot/lib/sha256.h boot/lib/hmac_drbg.h boot/lib/virtio_mmio.h \
+               boot/lib/ipc_bytes.h boot/include/tep/services.h
 	@mkdir -p $(BOOT_DIR)
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -T boot/lib/program.ld \
 	    $(TEP_LIB_SRCS) $(CRYPTO_SVC_SRCS) -o $@
+
+KEYSTORE_SVC := $(BOOT_DIR)/keystoresvc.elf
+MONOCYPHER := boot/third_party/monocypher
+KEYSTORE_SVC_SRCS := boot/services/keystore/main.c boot/lib/ipc_bytes.c \
+    $(MONOCYPHER)/monocypher.c $(MONOCYPHER)/monocypher-ed25519.c
+
+$(KEYSTORE_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
+                 boot/include/tep/services.h $(KEYSTORE_SVC_SRCS) boot/lib/ipc_bytes.h \
+                 $(MONOCYPHER)/monocypher.h $(MONOCYPHER)/monocypher-ed25519.h
+	@mkdir -p $(BOOT_DIR)
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -I$(MONOCYPHER) -T boot/lib/program.ld \
+	    $(TEP_LIB_SRCS) $(KEYSTORE_SVC_SRCS) -o $@
 
 ROOTSRV_SRCS := $(TEP_LIB_SRCS) boot/rootserver/main.c \
     boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
@@ -116,7 +129,7 @@ ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
     boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h \
     boot/rootserver/timer.h boot/rootserver/manager.h
 
-.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto qemu-devices
+.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto qemu-devices ed25519-check
 
 all: image
 
@@ -134,7 +147,7 @@ libsel4-headers: $(BUILD_DIR)/build.ninja
 	cmake --build $(BUILD_DIR) --target sel4_generated
 
 $(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS) $(DIAG_SVC) \
-            $(MAILBOX_SVC) $(CRYPTO_SVC) boot/include/tep/mailbox.h
+            $(MAILBOX_SVC) $(CRYPTO_SVC) $(KEYSTORE_SVC) boot/include/tep/mailbox.h
 	@mkdir -p $(BOOT_DIR)
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -Wa,-I$(BOOT_DIR) \
 	    -T boot/lib/program.ld $(ROOTSRV_SRCS) -o $@
@@ -168,6 +181,14 @@ test-crypto: $(CRYPTO_SRCS) boot/lib/sha256.h boot/lib/hmac_drbg.h
 	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -fsanitize=address,undefined \
 	    -Iboot/lib -Iboot/third_party/monocypher $(CRYPTO_SRCS) -o $(BUILD_DIR)/crypto_test
 	$(BUILD_DIR)/crypto_test
+
+# Host Ed25519 verifier for tools/mailbox_client.py --selftest.
+ed25519-check: $(BUILD_DIR)/ed25519_check
+
+$(BUILD_DIR)/ed25519_check: tools/ed25519_check.c $(CRYPTO_SRCS)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Iboot/third_party/monocypher tools/ed25519_check.c \
+	    boot/third_party/monocypher/monocypher.c boot/third_party/monocypher/monocypher-ed25519.c -o $@
 
 qemu-devices:
 	@echo $(TEP_QEMU_DEVICES)

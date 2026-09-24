@@ -60,6 +60,9 @@ enum tep_status {
     TEP_STATUS_BAD_LENGTH  = 2,     /* wrong message length for the label */
     TEP_STATUS_BAD_VERSION = 3,     /* protocol version mismatch */
     TEP_STATUS_DENIED      = 4,     /* not allowed, or not in this state */
+    TEP_STATUS_NOT_FOUND   = 5,     /* no such object for this caller */
+    TEP_STATUS_UNAVAILABLE = 6,     /* a service this request needs failed */
+    TEP_STATUS_FULL        = 7,     /* no room for another object */
 };
 
 /*
@@ -78,6 +81,21 @@ enum tep_status {
 #define TEP_SERVICE_BADGE(id, fault) \
     (TEP_BADGE_SERVICE | ((seL4_Word)(id) << TEP_BADGE_ID_SHIFT) | ((fault) ? TEP_BADGE_FAULT : 0))
 
+/*
+ * Badge of a client's capability to a service's endpoint: TEP_BADGE_CLIENT
+ * and the client's service id. A server's notification is bound to its TCB,
+ * so seL4_Recv on its endpoint also returns TEP_SVC_EVENT_* bits; those never
+ * carry TEP_BADGE_CLIENT.
+ */
+#define TEP_BADGE_CLIENT (1UL << 61)
+#define TEP_CLIENT_BADGE(id) (TEP_BADGE_CLIENT | ((seL4_Word)(id) & TEP_BADGE_ID_MASK))
+
+/* Service ids other services address by (the root task's service table). */
+#define TEP_SVC_ID_DIAG     1
+#define TEP_SVC_ID_MAILBOX  2
+#define TEP_SVC_ID_CRYPTO   3
+#define TEP_SVC_ID_KEYSTORE 4
+
 /* Bits signalled on the root task's bound notification (never TEP_BADGE_SERVICE). */
 #define TEP_EVENT_TIMER (1UL << 0)
 
@@ -90,8 +108,12 @@ enum tep_service_slot {
     TEP_SVC_SLOT_CONTROL  = 2,  /* root task endpoint, badged per service */
     TEP_SVC_SLOT_FAULT    = 3,  /* root task endpoint, badged as fault source */
     TEP_SVC_SLOT_IRQ      = 4,  /* IRQ handler, only for services with a device */
-    TEP_SVC_SLOT_COUNT
+    TEP_SVC_SLOT_ENDPOINT = 5,  /* a server's own endpoint, receive side */
+    TEP_SVC_SLOT_SERVER_BASE = 8,   /* + server id: send cap to that server */
 };
+
+/* Slot holding a client's capability to server `id` (empty until it runs). */
+#define TEP_SVC_SLOT_SERVER(id) (TEP_SVC_SLOT_SERVER_BASE + (id))
 
 #define TEP_SVC_CNODE_BITS 4
 

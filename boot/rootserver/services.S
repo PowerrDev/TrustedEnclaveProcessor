@@ -20,3 +20,8 @@ mailbox_elf_end:
 crypto_elf_start:
     .incbin "cryptosvc.elf"
 crypto_elf_end:
+    .balign 8
+    .global keystore_elf_start, keystore_elf_end
+keystore_elf_start:
+    .incbin "keystoresvc.elf"
+keystore_elf_end:
