@@ -11,8 +11,14 @@
  * Requests (<tep/services.h>): TEP_KS_GENERATE, TEP_KS_PUBLIC, TEP_KS_SIGN,
  * TEP_KS_DELETE. Ed25519 comes from the vendored Monocypher.
  *
- * Keys are kept in memory only for now; they are lost when the KeyStore
- * restarts.
+ * The table is sealed onto its virtio-blk disk after every change and loaded
+ * at start (store.h): keys survive reboots, but the sealing key is a host
+ * file, so this is NOT a protection boundary against the host. A store that
+ * exists but does not open stops the KeyStore (fail closed).
+ *
+ * Started with x0 = IPC buffer, x1 = service id, x2 = DMA page physical
+ * address, x3 = virtio-blk register offset in its device page; fw_cfg is
+ * the second device page (<tep/ipc.h>).
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -25,17 +31,10 @@
 #include "ipc_bytes.h"
 #include "monocypher.h"
 #include "monocypher-ed25519.h"
+#include "store.h"
 #include "tls.h"
 
 const char tep_log_prefix[] = "tepOS/keystore";
-
-struct key {
-    int in_use;
-    uint32_t handle;
-    seL4_Word owner;                /* client badge */
-    uint8_t secret[64];             /* Monocypher Ed25519 secret key (seed || public) */
-    uint8_t public[TEP_KS_PUBLIC_KEY_SIZE];
-};
 
 static struct key keys[TEP_KS_MAX_KEYS];
 static seL4_Word pongs;
@@ -70,6 +69,17 @@ static int get_random(uint8_t *out, seL4_Word n)
     }
     ipc_get_bytes(1, out, n);
     return 0;
+}
+
+/* Seal the table under a fresh nonce. Returns 0 or -1. */
+static int save(void)
+{
+    uint8_t nonce[STORE_NONCE_SIZE];
+
+    if (get_random(nonce, sizeof(nonce)) != 0) {
+        return -1;
+    }
+    return store_save(keys, TEP_KS_MAX_KEYS, nonce);
 }
 
 static struct key *find(uint32_t handle, seL4_Word owner)
@@ -126,6 +136,12 @@ static seL4_MessageInfo_t generate(seL4_Word owner, seL4_Word algorithm)
     k->handle = handle;
     k->owner = owner;
     k->in_use = 1;
+
+    /* A handle is only returned for a key that will survive a reboot. */
+    if (save() != 0) {
+        crypto_wipe(k, sizeof(*k));
+        return status_reply(TEP_STATUS_UNAVAILABLE);
+    }
 
     seL4_SetMR(0, handle);
     return seL4_MessageInfo_new(TEP_STATUS_OK, 0, 0, 1);
@@ -184,7 +200,8 @@ static seL4_MessageInfo_t handle_request(seL4_Word badge, seL4_MessageInfo_t inf
             return status_reply(TEP_STATUS_NOT_FOUND);
         }
         crypto_wipe(k, sizeof(*k));
-        return status_reply(TEP_STATUS_OK);
+        /* On failure the key is gone now but still sealed on disk until the next save. */
+        return status_reply(save() == 0 ? TEP_STATUS_OK : TEP_STATUS_UNAVAILABLE);
 
     default:
         return status_reply(TEP_STATUS_BAD_LABEL);
@@ -200,8 +217,11 @@ static void call_root_or_fail(seL4_Word label, seL4_Word len, const char *what)
     }
 }
 
-int main(seL4_Word ipc_buffer, seL4_Word id)
+int main(seL4_Word ipc_buffer, seL4_Word id, seL4_Word dma_paddr, seL4_Word dev_offset)
 {
+    const char *err;
+    int loaded;
+
     (void)id;
 
     if (tep_tls_init() == 0) {
@@ -210,9 +230,27 @@ int main(seL4_Word ipc_buffer, seL4_Word id)
     seL4_SetIPCBuffer((seL4_IPCBuffer *)ipc_buffer);
     tep_log("started");
 
+    if (dma_paddr == 0) {
+        svc_fail("no DMA page");
+    }
+    err = store_init(TEP_SVC_DEVICE_BASE + dev_offset, (void *)TEP_SVC_DMA_BASE, dma_paddr,
+                     TEP_SVC_DEVICE2_BASE);
+    if (err != NULL) {
+        svc_fail(err);
+    }
+    err = store_load(keys, TEP_KS_MAX_KEYS, &loaded);
+    if (err != NULL) {
+        svc_fail(err);
+    }
+    tep_log_start();
+    tep_puts("key store opened: ");
+    tep_putdec((seL4_Word)loaded);
+    tep_puts(" key(s)\n");
+    tep_log("sealing key comes from the host (fw_cfg): NOT a protection boundary");
+
     seL4_SetMR(0, TEP_IPC_VERSION);
     call_root_or_fail(TEP_IPC_READY, TEP_IPC_READY_LEN, "root task rejected READY");
-    tep_log("serving key requests (keys held in memory only)");
+    tep_log("serving key requests");
 
     for (;;) {
         seL4_Word badge;

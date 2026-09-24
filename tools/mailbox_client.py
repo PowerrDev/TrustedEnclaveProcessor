@@ -224,13 +224,32 @@ def selftest(link):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("command", nargs="?", choices=["hello", "health"], default="hello")
+    ap.add_argument("command", nargs="?", choices=["hello", "health", "key-new", "key-check"], default="hello")
+    ap.add_argument("args", nargs="*", help="key-check: <handle hex> <public key hex>")
     ap.add_argument("--socket", default="/tmp/tepos-mailbox.sock")
     ap.add_argument("--timeout", type=float, default=2.0, help="seconds to wait for each response")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
     link = Link(args.socket, args.timeout)
+    if args.command == "key-new":
+        # Prints "<handle hex> <public key hex>" of a new Ed25519 key.
+        r = link.request(KEY_GENERATE, 1, payload=bytes([ALG_ED25519]))
+        if not r or r["status"] != 0:
+            sys.exit("key-new: %s" % show(r))
+        p = link.request(KEY_PUBLIC, 2, payload=r["payload"])
+        print(r["payload"].hex(), p["payload"].hex())
+        sys.exit(0)
+    if args.command == "key-check":
+        # The key must still exist with the same public key and sign verifiably.
+        handle, public = bytes.fromhex(args.args[0]), bytes.fromhex(args.args[1])
+        p = link.request(KEY_PUBLIC, 1, payload=handle)
+        msg = b"tepOS persistence check"
+        sig = link.request(KEY_SIGN, 2, payload=handle + msg)
+        ok = (p and p["status"] == 0 and p["payload"] == public and sig and sig["status"] == 0
+              and ed25519_valid(public, sig["payload"], msg))
+        print("key-check: %s" % ("ok" if ok else "FAIL (%s / %s)" % (show(p), show(sig))))
+        sys.exit(0 if ok else 1)
     if args.selftest:
         sys.exit(0 if selftest(link) else 1)
     r = link.request(HELLO if args.command == "hello" else GET_HEALTH, 1)

@@ -37,8 +37,10 @@ extern const char keystore_elf_start[], keystore_elf_end[];
 #define MAILBOX_UART_PADDR 0x9040000UL
 #define MAILBOX_UART_IRQ   (32 + 8)
 
-/* virtio-mmio slot 0: virtio-rng (Makefile TEP_QEMU_DEVICES). Polled, so no IRQ. */
-#define CRYPTO_RNG_PADDR 0x0a000000UL
+/* Makefile TEP_QEMU_DEVICES. Polled, so no IRQs. */
+#define CRYPTO_RNG_PADDR   0x0a000000UL     /* virtio-mmio slot 0: virtio-rng */
+#define KEYSTORE_BLK_PADDR 0x0a001000UL     /* virtio-mmio slot 8: virtio-blk */
+#define FW_CFG_PADDR       0x09020000UL     /* QEMU fw_cfg: the key store's sealing key */
 
 static struct tep_service services[] = {
     { .name = "diag", .id = 1, .priority = 200, .pool_bits = 18, .required = 1 },
@@ -48,7 +50,8 @@ static struct tep_service services[] = {
     { .name = "crypto", .id = TEP_SVC_ID_CRYPTO, .priority = 180, .pool_bits = 18, .required = 1,
       .dev_paddr = CRYPTO_RNG_PADDR, .dma = 1, .serves = 1 },
     { .name = "keystore", .id = TEP_SVC_ID_KEYSTORE, .priority = 170, .pool_bits = 18, .required = 1,
-      .serves = 1, .uses = BIT(TEP_SVC_ID_CRYPTO) },
+      .serves = 1, .uses = BIT(TEP_SVC_ID_CRYPTO),
+      .dev_paddr = KEYSTORE_BLK_PADDR, .dev2_paddr = FW_CFG_PADDR, .dma = 1 },
 };
 
 #define NSERVICES (sizeof(services) / sizeof(services[0]))

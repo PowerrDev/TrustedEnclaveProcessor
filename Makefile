@@ -33,10 +33,24 @@ TEP_MAILBOX_SOCK ?= /tmp/tepos-mailbox.sock
 
 # tepOS's devices beyond the serial ports, each on a fixed virtio-mmio slot so
 # a service's device page (8 slots of 0x200 bytes) holds only its own device:
-# slot 0 (0x0a000000) virtio-rng for the CryptoService. Tools that boot tepOS
-# themselves (NXU's tools/with_tepos.sh) read this with `make -s qemu-devices`.
+#   slot 0 (0x0a000000)  virtio-rng for the CryptoService
+#   slot 8 (0x0a001000)  virtio-blk: the KeyStore's sealed key store
+#   fw_cfg opt/org.tepos/kek: the key store's sealing key
+# The paths are relative to this directory. Tools that boot tepOS themselves
+# (NXU's tools/with_tepos.sh) read this with `make -s qemu-devices` and start
+# QEMU here.
+#
+# The sealing key is a file on the host, so the sealed store is NOT a
+# protection boundary: it keeps keys across reboots and detects tampering,
+# nothing more (boot/services/keystore/store.h). Both files are created once
+# and kept; delete them to start with an empty key store.
+TEP_KEYSTORE_IMG := $(BUILD_DIR)/tepos-keystore.img
+TEP_KEK          := $(BUILD_DIR)/tepos-kek.bin
 TEP_QEMU_DEVICES := -global virtio-mmio.force-legacy=false \
-                    -device virtio-rng-device,bus=virtio-mmio-bus.0
+                    -device virtio-rng-device,bus=virtio-mmio-bus.0 \
+                    -drive if=none,format=raw,file=$(TEP_KEYSTORE_IMG),id=tepkeys \
+                    -device virtio-blk-device,drive=tepkeys,bus=virtio-mmio-bus.8 \
+                    -fw_cfg name=opt/org.tepos/kek,file=$(TEP_KEK)
 
 QEMU_FLAGS   := -machine $(QEMU_MACHINE) -cpu $(QEMU_CPU) -m $(QEMU_MEM) \
                 -nographic -serial mon:stdio \
@@ -109,11 +123,13 @@ $(CRYPTO_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/
 
 KEYSTORE_SVC := $(BOOT_DIR)/keystoresvc.elf
 MONOCYPHER := boot/third_party/monocypher
-KEYSTORE_SVC_SRCS := boot/services/keystore/main.c boot/lib/ipc_bytes.c \
+KEYSTORE_SVC_SRCS := boot/services/keystore/main.c boot/services/keystore/store.c \
+    boot/lib/ipc_bytes.c boot/lib/fw_cfg.c boot/lib/virtio_mmio.c \
     $(MONOCYPHER)/monocypher.c $(MONOCYPHER)/monocypher-ed25519.c
 
 $(KEYSTORE_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
                  boot/include/tep/services.h $(KEYSTORE_SVC_SRCS) boot/lib/ipc_bytes.h \
+                 boot/services/keystore/store.h boot/lib/fw_cfg.h boot/lib/virtio_mmio.h \
                  $(MONOCYPHER)/monocypher.h $(MONOCYPHER)/monocypher-ed25519.h
 	@mkdir -p $(BOOT_DIR)
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -I$(MONOCYPHER) -T boot/lib/program.ld \
@@ -129,7 +145,7 @@ ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
     boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h \
     boot/rootserver/timer.h boot/rootserver/manager.h
 
-.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto qemu-devices ed25519-check
+.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto qemu-devices ed25519-check test-keystore
 
 all: image
 
@@ -159,13 +175,22 @@ $(IMAGE): kernel $(ROOTSRV) boot/loader/start.S boot/loader/loader.c \
 	$(CC) $(BARE_CFLAGS) -Wa,-I$(BOOT_DIR) -T boot/loader/loader.ld \
 	    boot/loader/start.S boot/loader/loader.c boot/loader/blobs.S -o $@
 
-image: $(IMAGE)
+image: $(IMAGE) $(TEP_KEYSTORE_IMG) $(TEP_KEK)
 
-run: $(IMAGE)
+# Created once, never overwritten (see TEP_QEMU_DEVICES).
+$(TEP_KEYSTORE_IMG):
+	@mkdir -p $(BUILD_DIR)
+	dd if=/dev/zero of=$@ bs=1024 count=1024 2>/dev/null
+
+$(TEP_KEK):
+	@mkdir -p $(BUILD_DIR)
+	umask 077 && head -c 32 /dev/urandom > $@
+
+run: image
 	@echo "Booting seL4 in QEMU (Ctrl-A X to quit)"
 	$(QEMU) $(QEMU_FLAGS)
 
-debug: $(IMAGE)
+debug: image
 	@echo "QEMU waiting for gdb: $(CROSS)gdb $(KERNEL) -ex 'target remote :1234'"
 	$(QEMU) $(QEMU_FLAGS) -S -s
 
@@ -189,6 +214,10 @@ $(BUILD_DIR)/ed25519_check: tools/ed25519_check.c $(CRYPTO_SRCS)
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Iboot/third_party/monocypher tools/ed25519_check.c \
 	    boot/third_party/monocypher/monocypher.c boot/third_party/monocypher/monocypher-ed25519.c -o $@
+
+# The KeyStore's sealed store across reboots, tampering and a wrong sealing key.
+test-keystore: image ed25519-check
+	tools/keystore_persist_test.sh
 
 qemu-devices:
 	@echo $(TEP_QEMU_DEVICES)
