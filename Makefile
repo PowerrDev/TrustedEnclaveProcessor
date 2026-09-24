@@ -135,6 +135,44 @@ $(KEYSTORE_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/te
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -I$(MONOCYPHER) -T boot/lib/program.ld \
 	    $(TEP_LIB_SRCS) $(KEYSTORE_SVC_SRCS) -o $@
 
+AUTH_SVC := $(BOOT_DIR)/authsvc.elf
+AUTH_SVC_SRCS := boot/services/auth/main.c boot/lib/ipc_bytes.c boot/lib/fw_cfg.c \
+    $(MONOCYPHER)/monocypher.c
+
+$(AUTH_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
+             boot/include/tep/services.h $(AUTH_SVC_SRCS) boot/lib/ipc_bytes.h boot/lib/fw_cfg.h \
+             $(MONOCYPHER)/monocypher.h
+	@mkdir -p $(BOOT_DIR)
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -I$(MONOCYPHER) -T boot/lib/program.ld \
+	    $(TEP_LIB_SRCS) $(AUTH_SVC_SRCS) -o $@
+
+# The host's boot-signing key: made once by tools/boot_sign, kept in build/
+# (never committed). tepOS is built with only its public key; the private key
+# signs NXU boot manifests (make boot-manifest).
+BOOT_SIGN      := $(BUILD_DIR)/boot_sign
+BOOT_SIGN_KEY  := $(BUILD_DIR)/boot-signing.key
+BOOT_PUBKEY_H  := $(BUILD_DIR)/boot_pubkey.h
+
+$(BOOT_SIGN): tools/boot_sign.c boot/lib/sha256.c boot/lib/sha256.h boot/include/tep/boot_manifest.h \
+              $(MONOCYPHER)/monocypher.c $(MONOCYPHER)/monocypher-ed25519.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -Iboot/include -Iboot/lib -I$(MONOCYPHER) tools/boot_sign.c \
+	    boot/lib/sha256.c $(MONOCYPHER)/monocypher.c $(MONOCYPHER)/monocypher-ed25519.c -o $@
+
+$(BOOT_PUBKEY_H): | $(BOOT_SIGN)
+	$(BOOT_SIGN) keygen $(BOOT_SIGN_KEY) $@
+
+BOOT_SVC := $(BOOT_DIR)/bootpolicysvc.elf
+BOOT_SVC_SRCS := boot/services/bootpolicy/main.c boot/lib/ipc_bytes.c \
+    $(MONOCYPHER)/monocypher.c $(MONOCYPHER)/monocypher-ed25519.c
+
+$(BOOT_SVC): libsel4-headers $(TEP_LIB_SRCS) $(TEP_LIB_HDRS) boot/include/tep/ipc.h \
+             boot/include/tep/services.h boot/include/tep/boot_manifest.h $(BOOT_SVC_SRCS) \
+             boot/lib/ipc_bytes.h $(BOOT_PUBKEY_H)
+	@mkdir -p $(BOOT_DIR)
+	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -I$(MONOCYPHER) -I$(BUILD_DIR) \
+	    -T boot/lib/program.ld $(TEP_LIB_SRCS) $(BOOT_SVC_SRCS) -o $@
+
 ROOTSRV_SRCS := $(TEP_LIB_SRCS) boot/rootserver/main.c \
     boot/rootserver/runtime.c boot/rootserver/bootinfo.c \
     boot/rootserver/cspace.c boot/rootserver/untyped.c boot/rootserver/vspace.c \
@@ -145,7 +183,7 @@ ROOTSRV_HDRS := boot/rootserver/runtime.h boot/rootserver/bootinfo.h \
     boot/rootserver/elf.h boot/rootserver/service.h boot/include/tep/ipc.h \
     boot/rootserver/timer.h boot/rootserver/manager.h
 
-.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto qemu-devices ed25519-check test-keystore
+.PHONY: all kernel libsel4-headers image run debug clean-boot test-crypto qemu-devices ed25519-check test-keystore test-auth test-boot-policy
 
 all: image
 
@@ -163,7 +201,8 @@ libsel4-headers: $(BUILD_DIR)/build.ninja
 	cmake --build $(BUILD_DIR) --target sel4_generated
 
 $(ROOTSRV): libsel4-headers $(ROOTSRV_SRCS) $(ROOTSRV_HDRS) $(TEP_LIB_HDRS) $(DIAG_SVC) \
-            $(MAILBOX_SVC) $(CRYPTO_SVC) $(KEYSTORE_SVC) boot/include/tep/mailbox.h
+            $(MAILBOX_SVC) $(CRYPTO_SVC) $(KEYSTORE_SVC) $(AUTH_SVC) $(BOOT_SVC) \
+            boot/include/tep/mailbox.h
 	@mkdir -p $(BOOT_DIR)
 	$(CC) $(BARE_CFLAGS) $(SEL4_INCLUDES) $(TEP_INCLUDES) -Wa,-I$(BOOT_DIR) \
 	    -T boot/lib/program.ld $(ROOTSRV_SRCS) -o $@
@@ -218,6 +257,14 @@ $(BUILD_DIR)/ed25519_check: tools/ed25519_check.c $(CRYPTO_SRCS)
 # The KeyStore's sealed store across reboots, tampering and a wrong sealing key.
 test-keystore: image ed25519-check
 	tools/keystore_persist_test.sh
+
+# The AuthenticationService's passcode, delays, lockout and recovery reset.
+test-auth: image
+	tools/auth_test.sh
+
+# The BootPolicyService: signatures, digests and rollback, across a reboot.
+test-boot-policy: image
+	tools/boot_policy_test.sh
 
 qemu-devices:
 	@echo $(TEP_QEMU_DEVICES)

@@ -32,6 +32,8 @@ extern const char diag_elf_start[], diag_elf_end[];
 extern const char mailbox_elf_start[], mailbox_elf_end[];
 extern const char crypto_elf_start[], crypto_elf_end[];
 extern const char keystore_elf_start[], keystore_elf_end[];
+extern const char auth_elf_start[], auth_elf_end[];
+extern const char bootpolicy_elf_start[], bootpolicy_elf_end[];
 
 /* QEMU virt: the second pl011 (serial1) is the NXU mailbox link. */
 #define MAILBOX_UART_PADDR 0x9040000UL
@@ -46,12 +48,19 @@ static struct tep_service services[] = {
     { .name = "diag", .id = 1, .priority = 200, .pool_bits = 18, .required = 1 },
     { .name = "mailbox", .id = 2, .priority = 190, .pool_bits = 18, .required = 1,
       .perms = TEP_PERM_HEALTH, .dev_paddr = MAILBOX_UART_PADDR, .dev_irq = MAILBOX_UART_IRQ,
-      .uses = BIT(TEP_SVC_ID_CRYPTO) | BIT(TEP_SVC_ID_KEYSTORE) },
+      .uses = BIT(TEP_SVC_ID_CRYPTO) | BIT(TEP_SVC_ID_KEYSTORE) | BIT(TEP_SVC_ID_AUTH) |
+              BIT(TEP_SVC_ID_BOOT) },
     { .name = "crypto", .id = TEP_SVC_ID_CRYPTO, .priority = 180, .pool_bits = 18, .required = 1,
       .dev_paddr = CRYPTO_RNG_PADDR, .dma = 1, .serves = 1 },
     { .name = "keystore", .id = TEP_SVC_ID_KEYSTORE, .priority = 170, .pool_bits = 18, .required = 1,
       .serves = 1, .uses = BIT(TEP_SVC_ID_CRYPTO),
       .dev_paddr = KEYSTORE_BLK_PADDR, .dev2_paddr = FW_CFG_PADDR, .dma = 1 },
+    /* 1 MiB pool: Argon2id works in 256 KiB. fw_cfg carries the recovery reset flag. */
+    { .name = "auth", .id = TEP_SVC_ID_AUTH, .priority = 160, .pool_bits = 20, .required = 1,
+      .serves = 1, .uses = BIT(TEP_SVC_ID_CRYPTO) | BIT(TEP_SVC_ID_KEYSTORE),
+      .perms = TEP_PERM_TIME, .dev_paddr = FW_CFG_PADDR },
+    { .name = "bootpolicy", .id = TEP_SVC_ID_BOOT, .priority = 160, .pool_bits = 18, .required = 1,
+      .serves = 1, .uses = BIT(TEP_SVC_ID_KEYSTORE) },
 };
 
 #define NSERVICES (sizeof(services) / sizeof(services[0]))
@@ -186,6 +195,10 @@ int main(seL4_BootInfo *bi)
     services[2].image_size = crypto_elf_end - crypto_elf_start;
     services[3].image = keystore_elf_start;
     services[3].image_size = keystore_elf_end - keystore_elf_start;
+    services[4].image = auth_elf_start;
+    services[4].image_size = auth_elf_end - auth_elf_start;
+    services[5].image = bootpolicy_elf_start;
+    services[5].image_size = bootpolicy_elf_end - bootpolicy_elf_start;
     /* Boot id for the mailbox HELLO: the RTC seconds at boot, 0 without it. */
     tep_manager_init(services, NSERVICES, root_ep, err == NULL, err == NULL ? tep_timer_seconds() : 0);
     tep_log("service manager initialized");

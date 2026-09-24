@@ -25,3 +25,13 @@ crypto_elf_end:
 keystore_elf_start:
     .incbin "keystoresvc.elf"
 keystore_elf_end:
+    .balign 8
+    .global auth_elf_start, auth_elf_end
+auth_elf_start:
+    .incbin "authsvc.elf"
+auth_elf_end:
+    .balign 8
+    .global bootpolicy_elf_start, bootpolicy_elf_end
+bootpolicy_elf_start:
+    .incbin "bootpolicysvc.elf"
+bootpolicy_elf_end:
