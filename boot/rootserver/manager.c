@@ -11,6 +11,7 @@
 
 #include "manager.h"
 #include "runtime.h"
+#include "timer.h"
 
 static struct tep_service *svcs;
 static seL4_Word nsvcs;
@@ -223,6 +224,23 @@ static void handle_control(struct tep_service *svc, seL4_MessageInfo_t info)
     seL4_Word label = seL4_MessageInfo_get_label(info);
 
     switch (label) {
+    case TEP_IPC_TIME:
+        status = check_message(info, TEP_IPC_TIME_LEN);
+        if (status == TEP_STATUS_OK &&
+            (!(svc->perms & TEP_PERM_TIME) || svc->state != TEP_SVC_READY)) {
+            status = TEP_STATUS_DENIED;
+        }
+        if (status == TEP_STATUS_OK && !watchdog) {
+            status = TEP_STATUS_UNAVAILABLE;    /* no RTC: no time to give */
+        }
+        if (status == TEP_STATUS_OK) {
+            seL4_SetMR(0, TEP_IPC_VERSION);
+            seL4_SetMR(1, tep_timer_seconds());
+            seL4_Reply(seL4_MessageInfo_new(TEP_STATUS_OK, 0, 0, TEP_IPC_TIME_REPLY_LEN));
+            return;
+        }
+        seL4_Reply(seL4_MessageInfo_new(status, 0, 0, 0));
+        return;
     case TEP_IPC_HEALTH:
         status = check_message(info, TEP_IPC_HEALTH_LEN);
         if (status == TEP_STATUS_OK && !(svc->perms & TEP_PERM_HEALTH)) {

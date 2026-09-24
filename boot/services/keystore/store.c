@@ -15,7 +15,7 @@
 #define SECTOR 512
 #define REGION_SECTORS 16
 #define MAGIC "TEPKEYS1"
-#define FORMAT_VERSION 1u
+#define FORMAT_VERSION 2u      /* 1: keys only; 2: keys and records (1 still loads) */
 #define KEK_NAME "opt/org.tepos/kek"
 #define KEK_SIZE 32
 #define AD_SIZE 24          /* magic, version, generation, length: authenticated, not secret */
@@ -29,9 +29,13 @@
 #define DMA_STATUS 0x800
 #define BLK_MAX_POLLS 1000000
 
-/* One record per key in the sealed table. */
+/*
+ * Sealed table: u32 key count, u32 record count (0 in version 1), then the
+ * keys, then the records.
+ */
 #define RECORD_SIZE (4 + 4 + 8 + 64 + TEP_KS_PUBLIC_KEY_SIZE)
-#define TABLE_MAX (8 + TEP_KS_MAX_KEYS * RECORD_SIZE)
+#define DATA_RECORD_SIZE (8 + 1 + 1 + 2 + 4 + TEP_KS_RECORD_MAX)
+#define TABLE_MAX (8 + TEP_KS_MAX_KEYS * RECORD_SIZE + TEP_KS_MAX_RECORDS * DATA_RECORD_SIZE)
 _Static_assert(TABLE_MAX <= (REGION_SECTORS - 1) * SECTOR, "sealed table must fit its region");
 
 static struct virtio_dev blk;
@@ -139,7 +143,8 @@ static long open_region(int r, uint64_t *generation, int *present)
     *present = 1;
 
     uint32_t length = get32(header + 20);
-    if (get32(header + 8) != FORMAT_VERSION || length < 8 || length > TABLE_MAX) {
+    uint32_t version = get32(header + 8);
+    if ((version != 1 && version != FORMAT_VERSION) || length < 8 || length > TABLE_MAX) {
         return -1;
     }
     for (uint32_t s = 0; s * SECTOR < length; s++) {
@@ -157,7 +162,8 @@ static long open_region(int r, uint64_t *generation, int *present)
     return (long)length;
 }
 
-const char *store_load(struct key *keys, int max, int *count)
+const char *store_load(struct key *keys, int max, struct record *records, int max_records,
+                       int *count)
 {
     int any_present = 0;
     int best = -1;
@@ -191,9 +197,25 @@ const char *store_load(struct key *keys, int max, int *count)
         return "sealed key store changed while loading";
     }
     uint32_t n = get32(table);
-    if (n > (uint32_t)max || 8 + (long)n * RECORD_SIZE != length) {
+    uint32_t nrec = get32(table + 4);
+    if (n > (uint32_t)max || nrec > (uint32_t)max_records ||
+        8 + (long)n * RECORD_SIZE + (long)nrec * DATA_RECORD_SIZE != length) {
         crypto_wipe(table, sizeof(table));
         return "sealed key store has a malformed table";
+    }
+    for (uint32_t i = 0; i < nrec; i++) {
+        const uint8_t *rec = table + 8 + n * RECORD_SIZE + i * DATA_RECORD_SIZE;
+        if (rec[8] >= TEP_KS_RECORD_SLOTS || rec[9] > TEP_KS_RECORD_MAX) {
+            crypto_wipe(table, sizeof(table));
+            return "sealed key store has a malformed record";
+        }
+        records[i].in_use = 1;
+        records[i].owner = (seL4_Word)get64(rec);
+        records[i].slot = rec[8];
+        records[i].len = rec[9];
+        for (int b = 0; b < TEP_KS_RECORD_MAX; b++) {
+            records[i].data[b] = rec[16 + b];
+        }
     }
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *rec = table + 8 + i * RECORD_SIZE;
@@ -214,7 +236,8 @@ const char *store_load(struct key *keys, int max, int *count)
     return NULL;
 }
 
-int store_save(const struct key *keys, int max, const uint8_t nonce[STORE_NONCE_SIZE])
+int store_save(const struct key *keys, int max, const struct record *records, int max_records,
+               const uint8_t nonce[STORE_NONCE_SIZE])
 {
     uint8_t header[SECTOR] = { 0 };
     uint32_t n = 0;
@@ -237,9 +260,25 @@ int store_save(const struct key *keys, int max, const uint8_t nonce[STORE_NONCE_
         }
         n++;
     }
+    uint32_t nrec = 0;
+    for (int i = 0; i < max_records; i++) {
+        if (!records[i].in_use) {
+            continue;
+        }
+        uint8_t *rec = table + 8 + n * RECORD_SIZE + nrec * DATA_RECORD_SIZE;
+        put64(rec, records[i].owner);
+        rec[8] = records[i].slot;
+        rec[9] = records[i].len;
+        rec[10] = rec[11] = 0;
+        put32(rec + 12, 0);
+        for (int b = 0; b < TEP_KS_RECORD_MAX; b++) {
+            rec[16 + b] = records[i].data[b];
+        }
+        nrec++;
+    }
     put32(table, n);
-    put32(table + 4, 0);
-    uint32_t length = 8 + n * RECORD_SIZE;
+    put32(table + 4, nrec);
+    uint32_t length = 8 + n * RECORD_SIZE + nrec * DATA_RECORD_SIZE;
 
     for (int i = 0; i < 8; i++) {
         header[i] = (uint8_t)MAGIC[i];

@@ -30,6 +30,15 @@ struct key {
     uint8_t public[TEP_KS_PUBLIC_KEY_SIZE];
 };
 
+/* A small sealed record another service keeps here (TEP_KS_RECORD_*). */
+struct record {
+    int in_use;
+    seL4_Word owner;                /* client badge */
+    uint8_t slot;
+    uint8_t len;
+    uint8_t data[TEP_KS_RECORD_MAX];
+};
+
 #define STORE_NONCE_SIZE 24
 
 /*
@@ -39,11 +48,13 @@ struct key {
 const char *store_init(uintptr_t blk_regs, void *dma, uint64_t dma_pa, uintptr_t fw_cfg);
 
 /*
- * Load the newest sealed table into keys[]. Returns NULL (with *count keys
- * loaded; 0 for a blank disk) or a static string: a store that exists but
- * does not authenticate is an error, never silently replaced.
+ * Load the newest sealed table into keys[] and records[]. Returns NULL (with
+ * *count keys loaded; 0 for a blank disk) or a static string: a store that
+ * exists but does not authenticate is an error, never silently replaced.
  */
-const char *store_load(struct key *keys, int max, int *count);
+const char *store_load(struct key *keys, int max_keys, struct record *records, int max_records,
+                       int *count);
 
-/* Seal keys[] into the other region under a fresh nonce. Returns 0 or -1. */
-int store_save(const struct key *keys, int max, const uint8_t nonce[STORE_NONCE_SIZE]);
+/* Seal keys[] and records[] into the other region under a fresh nonce. Returns 0 or -1. */
+int store_save(const struct key *keys, int max_keys, const struct record *records, int max_records,
+               const uint8_t nonce[STORE_NONCE_SIZE]);

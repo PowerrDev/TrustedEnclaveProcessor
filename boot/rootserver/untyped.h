@@ -51,7 +51,11 @@ int tep_pool_create(struct tep_pool *pool, seL4_Word size_bits);
  */
 int tep_pool_revoke(struct tep_pool *pool);
 
-/* A frame capability for the device page at paddr, from the device untypeds. */
+/*
+ * The frame capability for the device page holding paddr, made from the
+ * device untypeds on first use and the same capability afterwards (callers
+ * give services copies of it).
+ */
 seL4_CPtr tep_device_frame_alloc(seL4_Word paddr);
 
 /* Totals over RAM untypeds, in bytes. */

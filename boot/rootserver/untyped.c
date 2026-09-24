@@ -162,9 +162,38 @@ int tep_pool_revoke(struct tep_pool *pool)
     return 0;
 }
 
+/* Device pages already handed out: a page shared by several services (fw_cfg) is made once. */
+#define DEVICE_FRAMES 16
+
+static struct {
+    seL4_Word page;
+    seL4_CPtr frame;
+} device_frames[DEVICE_FRAMES];
+
+static seL4_CPtr device_frame_new(seL4_Word page);
+
 seL4_CPtr tep_device_frame_alloc(seL4_Word paddr)
 {
     seL4_Word page = paddr & ~(BIT(seL4_PageBits) - 1);
+
+    for (int i = 0; i < DEVICE_FRAMES; i++) {
+        if (device_frames[i].frame != seL4_CapNull && device_frames[i].page == page) {
+            return device_frames[i].frame;
+        }
+    }
+    seL4_CPtr frame = device_frame_new(page);
+    for (int i = 0; i < DEVICE_FRAMES && frame != seL4_CapNull; i++) {
+        if (device_frames[i].frame == seL4_CapNull) {
+            device_frames[i].page = page;
+            device_frames[i].frame = frame;
+            break;
+        }
+    }
+    return frame;
+}
+
+static seL4_CPtr device_frame_new(seL4_Word page)
+{
     struct tep_pool *ut = NULL;
 
     /* The smallest device pool that holds the page and has not moved past it. */

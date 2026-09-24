@@ -37,6 +37,7 @@
 const char tep_log_prefix[] = "tepOS/keystore";
 
 static struct key keys[TEP_KS_MAX_KEYS];
+static struct record records[TEP_KS_MAX_RECORDS];
 static seL4_Word pongs;
 
 static void __attribute__((noreturn)) svc_fail(const char *msg)
@@ -79,7 +80,7 @@ static int save(void)
     if (get_random(nonce, sizeof(nonce)) != 0) {
         return -1;
     }
-    return store_save(keys, TEP_KS_MAX_KEYS, nonce);
+    return store_save(keys, TEP_KS_MAX_KEYS, records, TEP_KS_MAX_RECORDS, nonce);
 }
 
 static struct key *find(uint32_t handle, seL4_Word owner)
@@ -147,6 +148,55 @@ static seL4_MessageInfo_t generate(seL4_Word owner, seL4_Word algorithm)
     return seL4_MessageInfo_new(TEP_STATUS_OK, 0, 0, 1);
 }
 
+static struct record *find_record(seL4_Word owner, seL4_Word slot)
+{
+    for (int i = 0; i < TEP_KS_MAX_RECORDS; i++) {
+        if (records[i].in_use && records[i].owner == owner && records[i].slot == slot) {
+            return &records[i];
+        }
+    }
+    return NULL;
+}
+
+/* TEP_KS_RECORD_PUT: replies once the record is sealed on disk. */
+static seL4_MessageInfo_t record_put(seL4_Word owner, seL4_Word len)
+{
+    seL4_Word slot = seL4_GetMR(0), n = seL4_GetMR(1);
+    struct record *r, saved;
+    int fresh = 0;
+
+    if (len < 2 || slot >= TEP_KS_RECORD_SLOTS || n > TEP_KS_RECORD_MAX || len != 2 + TEP_BYTES_WORDS(n)) {
+        return status_reply(TEP_STATUS_BAD_LENGTH);
+    }
+    r = find_record(owner, slot);
+    for (int i = 0; i < TEP_KS_MAX_RECORDS && r == NULL; i++) {
+        if (!records[i].in_use) {
+            r = &records[i];
+            fresh = 1;
+        }
+    }
+    if (r == NULL) {
+        return status_reply(TEP_STATUS_FULL);
+    }
+    saved = *r;
+    r->in_use = 1;
+    r->owner = owner;
+    r->slot = (uint8_t)slot;
+    r->len = (uint8_t)n;
+    crypto_wipe(r->data, sizeof(r->data));
+    ipc_get_bytes(2, r->data, n);
+    if (save() != 0) {
+        *r = saved;
+        if (fresh) {
+            crypto_wipe(r, sizeof(*r));
+        }
+        crypto_wipe(&saved, sizeof(saved));
+        return status_reply(TEP_STATUS_UNAVAILABLE);
+    }
+    crypto_wipe(&saved, sizeof(saved));
+    return status_reply(TEP_STATUS_OK);
+}
+
 static seL4_MessageInfo_t handle_request(seL4_Word badge, seL4_MessageInfo_t info)
 {
     seL4_Word len = seL4_MessageInfo_get_length(info);
@@ -203,6 +253,22 @@ static seL4_MessageInfo_t handle_request(seL4_Word badge, seL4_MessageInfo_t inf
         /* On failure the key is gone now but still sealed on disk until the next save. */
         return status_reply(save() == 0 ? TEP_STATUS_OK : TEP_STATUS_UNAVAILABLE);
 
+    case TEP_KS_RECORD_PUT:
+        return record_put(owner, len);
+
+    case TEP_KS_RECORD_GET: {
+        struct record *r;
+        if (len != 1) {
+            return status_reply(TEP_STATUS_BAD_LENGTH);
+        }
+        r = find_record(owner, seL4_GetMR(0));
+        if (r == NULL) {
+            return status_reply(TEP_STATUS_NOT_FOUND);
+        }
+        seL4_SetMR(0, r->len);
+        return seL4_MessageInfo_new(TEP_STATUS_OK, 0, 0, 1 + ipc_put_bytes(1, r->data, r->len));
+    }
+
     default:
         return status_reply(TEP_STATUS_BAD_LABEL);
     }
@@ -238,7 +304,7 @@ int main(seL4_Word ipc_buffer, seL4_Word id, seL4_Word dma_paddr, seL4_Word dev_
     if (err != NULL) {
         svc_fail(err);
     }
-    err = store_load(keys, TEP_KS_MAX_KEYS, &loaded);
+    err = store_load(keys, TEP_KS_MAX_KEYS, records, TEP_KS_MAX_RECORDS, &loaded);
     if (err != NULL) {
         svc_fail(err);
     }

@@ -32,11 +32,17 @@ enum tep_ipc_label {
                                  * MR1 = pings answered so far */
     TEP_IPC_HEALTH = 0x102,     /* service -> root: MR0 = TEP_IPC_VERSION;
                                  * needs TEP_PERM_HEALTH */
+    TEP_IPC_TIME   = 0x103,     /* service -> root: MR0 = TEP_IPC_VERSION;
+                                 * needs TEP_PERM_TIME. Reply: MR0 = version,
+                                 * MR1 = RTC seconds. The RTC is the host's
+                                 * clock: not a trusted time source. */
 };
 
 #define TEP_IPC_READY_LEN  1
 #define TEP_IPC_PONG_LEN   2
 #define TEP_IPC_HEALTH_LEN 1
+#define TEP_IPC_TIME_LEN   1
+#define TEP_IPC_TIME_REPLY_LEN 2
 
 /*
  * HEALTH reply: MR0 = TEP_IPC_VERSION, MR1 = boot id, MR2 = health
@@ -48,6 +54,7 @@ enum tep_ipc_label {
 
 /* Per-service permissions for requests to the root task. */
 #define TEP_PERM_HEALTH (1UL << 0)
+#define TEP_PERM_TIME   (1UL << 1)
 
 /* Bits the root task signals on a service's notification. */
 #define TEP_SVC_EVENT_PING (1UL << 0)   /* answer with TEP_IPC_PONG */
@@ -63,6 +70,9 @@ enum tep_status {
     TEP_STATUS_NOT_FOUND   = 5,     /* no such object for this caller */
     TEP_STATUS_UNAVAILABLE = 6,     /* a service this request needs failed */
     TEP_STATUS_FULL        = 7,     /* no room for another object */
+    TEP_STATUS_RETRY_LATER = 8,     /* not now: MR0 = seconds to wait */
+    TEP_STATUS_LOCKED      = 9,     /* refused until a recovery reset */
+    TEP_STATUS_ROLLBACK    = 10,    /* older than the newest accepted: MR0 = that version */
 };
 
 /*
@@ -95,6 +105,8 @@ enum tep_status {
 #define TEP_SVC_ID_MAILBOX  2
 #define TEP_SVC_ID_CRYPTO   3
 #define TEP_SVC_ID_KEYSTORE 4
+#define TEP_SVC_ID_AUTH     5
+#define TEP_SVC_ID_BOOT     6
 
 /* Bits signalled on the root task's bound notification (never TEP_BADGE_SERVICE). */
 #define TEP_EVENT_TIMER (1UL << 0)
