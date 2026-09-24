@@ -25,11 +25,14 @@ REQUEST, RESPONSE = 1, 2
 HELLO, GET_HEALTH = 0x0001, 0x0002
 SHA256, RANDOM = 0x0010, 0x0011
 KEY_GENERATE, KEY_PUBLIC, KEY_SIGN, KEY_DELETE = 0x0020, 0x0021, 0x0022, 0x0023
+AUTH_SET, AUTH_VERIFY, AUTH_STATUS = 0x0030, 0x0031, 0x0032
+BOOT_VERIFY = 0x0040
+BOOT_REASONS = {1: "bad format", 2: "bad signature", 3: "wrong image"}
 ALG_ED25519 = 1
 FEATURE_CRYPTO = 1
 ED25519_CHECK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "ed25519_check")
 STATUS = {0: "OK", 1: "BAD_VERSION", 2: "BAD_COMMAND", 3: "BAD_LENGTH",
-          4: "UNAVAILABLE", 5: "INTERNAL", 6: "NOT_FOUND", 7: "FULL"}
+          4: "UNAVAILABLE", 5: "INTERNAL", 6: "NOT_FOUND", 7: "FULL", 8: "DENIED", 9: "RETRY_LATER", 10: "LOCKED", 11: "ROLLBACK"}
 HEALTH = {0: "starting", 1: "ok", 2: "degraded", 3: "failed"}
 STATE = {0: "stopped", 1: "starting", 2: "ready", 3: "failed", 4: "disabled"}
 HEADER = struct.Struct("<HBBHHIHH")
@@ -224,8 +227,12 @@ def selftest(link):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("command", nargs="?", choices=["hello", "health", "key-new", "key-check"], default="hello")
-    ap.add_argument("args", nargs="*", help="key-check: <handle hex> <public key hex>")
+    ap.add_argument("command", nargs="?", default="hello",
+                    choices=["hello", "health", "key-new", "key-check", "auth-status", "auth-verify", "auth-set",
+                             "boot-verify"])
+    ap.add_argument("args", nargs="*",
+                    help="key-check: <handle hex> <public key hex>; auth-verify: <passcode>; "
+                         "auth-set: <old passcode or -> <new passcode>; boot-verify: <manifest> <image>")
     ap.add_argument("--socket", default="/tmp/tepos-mailbox.sock")
     ap.add_argument("--timeout", type=float, default=2.0, help="seconds to wait for each response")
     ap.add_argument("--selftest", action="store_true")
@@ -239,6 +246,40 @@ def main():
             sys.exit("key-new: %s" % show(r))
         p = link.request(KEY_PUBLIC, 2, payload=r["payload"])
         print(r["payload"].hex(), p["payload"].hex())
+        sys.exit(0)
+    if args.command == "auth-status":
+        r = link.request(AUTH_STATUS, 1)
+        if not r or r["status"] != 0:
+            sys.exit("auth-status: %s" % show(r))
+        s_set, fails, locked, _, wait = struct.unpack("<BBBBI", r["payload"])
+        print("set=%d failures=%d locked=%d wait=%d" % (s_set, fails, locked, wait))
+        sys.exit(0)
+    if args.command in ("auth-verify", "auth-set"):
+        if args.command == "auth-verify":
+            r = link.request(AUTH_VERIFY, 1, payload=args.args[0].encode())
+        else:
+            old = b"" if args.args[0] == "-" else args.args[0].encode()
+            r = link.request(AUTH_SET, 1, payload=bytes([len(old)]) + old + args.args[1].encode())
+        if r is None:
+            sys.exit("%s: no response" % args.command)
+        out = STATUS.get(r["status"], str(r["status"]))
+        if r["status"] == 9 and len(r["payload"]) == 4:
+            out += " %d" % struct.unpack("<I", r["payload"])[0]
+        print(out)
+        sys.exit(0)
+    if args.command == "boot-verify":
+        # tepOS checks the manifest against the SHA-256 we measure of the image.
+        manifest = open(args.args[0], "rb").read()
+        digest = hashlib.sha256(open(args.args[1], "rb").read()).digest()
+        r = link.request(BOOT_VERIFY, 1, payload=manifest + digest)
+        if r is None:
+            sys.exit("boot-verify: no response")
+        out = STATUS.get(r["status"], str(r["status"]))
+        if r["status"] in (0, 11) and len(r["payload"]) == 4:
+            out += " %d" % struct.unpack("<I", r["payload"])[0]
+        elif r["status"] == 8 and len(r["payload"]) == 1:
+            out += " " + BOOT_REASONS.get(r["payload"][0], str(r["payload"][0]))
+        print(out)
         sys.exit(0)
     if args.command == "key-check":
         # The key must still exist with the same public key and sign verifiably.

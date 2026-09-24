@@ -138,6 +138,14 @@ static seL4_Uint16 mailbox_status(seL4_Word service_status)
         return TEP_MB_FULL;
     case TEP_STATUS_UNAVAILABLE:
         return TEP_MB_UNAVAILABLE;
+    case TEP_STATUS_DENIED:
+        return TEP_MB_DENIED;
+    case TEP_STATUS_RETRY_LATER:
+        return TEP_MB_RETRY_LATER;
+    case TEP_STATUS_LOCKED:
+        return TEP_MB_LOCKED;
+    case TEP_STATUS_ROLLBACK:
+        return TEP_MB_ROLLBACK;
     default:
         return TEP_MB_INTERNAL;
     }
@@ -155,6 +163,15 @@ static int call_server(seL4_Word id, seL4_Word label, seL4_Word len, seL4_Word w
     *info = seL4_Call(TEP_SVC_SLOT_SERVER(id), seL4_MessageInfo_new(label, 0, 0, len));
     if (seL4_MessageInfo_get_label(*info) != TEP_STATUS_OK) {
         resp.status = mailbox_status(seL4_MessageInfo_get_label(*info));
+        if ((resp.status == TEP_MB_RETRY_LATER || resp.status == TEP_MB_ROLLBACK) &&
+            seL4_MessageInfo_get_length(*info) == 1) {
+            seL4_Word v = seL4_GetMR(0);
+            put32(resp.payload, v > 0xffffffffUL ? 0xffffffffU : (uint32_t)v);
+            resp.payload_len = 4;
+        } else if (resp.status == TEP_MB_DENIED && seL4_MessageInfo_get_length(*info) == 1) {
+            resp.payload[0] = (seL4_Uint8)seL4_GetMR(0);     /* reason, e.g. BOOT_BAD_SIGNATURE */
+            resp.payload_len = 1;
+        }
         return 0;
     }
     if (seL4_MessageInfo_get_length(*info) != want_len) {
@@ -180,6 +197,14 @@ static void handle_crypto_request(void)
     case TEP_MB_CMD_KEY_SIGN:
     case TEP_MB_CMD_KEY_DELETE:
         server = TEP_SVC_ID_KEYSTORE;
+        break;
+    case TEP_MB_CMD_AUTH_SET:
+    case TEP_MB_CMD_AUTH_VERIFY:
+    case TEP_MB_CMD_AUTH_STATUS:
+        server = TEP_SVC_ID_AUTH;
+        break;
+    case TEP_MB_CMD_BOOT_VERIFY:
+        server = TEP_SVC_ID_BOOT;
         break;
     default:
         resp.status = TEP_MB_BAD_COMMAND;
@@ -275,6 +300,61 @@ static void handle_crypto_request(void)
         call_server(TEP_SVC_ID_KEYSTORE, TEP_KS_DELETE, 1, 0, &info);
         return;
 
+    case TEP_MB_CMD_AUTH_VERIFY:
+        n = req.payload_len;
+        if (n < TEP_MB_PASSCODE_MIN || n > TEP_MB_PASSCODE_MAX) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, n);
+        call_server(TEP_SVC_ID_AUTH, TEP_AUTH_VERIFY, 1 + ipc_put_bytes(1, req.payload, n), 0, &info);
+        return;
+
+    case TEP_MB_CMD_AUTH_SET: {
+        seL4_Word old_n = req.payload_len >= 1 ? req.payload[0] : 0;
+        if (req.payload_len < 1 || old_n > TEP_MB_PASSCODE_MAX || req.payload_len < 1 + old_n) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        n = req.payload_len - 1 - old_n;
+        if (n < TEP_MB_PASSCODE_MIN || n > TEP_MB_PASSCODE_MAX) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, old_n);
+        seL4_SetMR(1, n);
+        call_server(TEP_SVC_ID_AUTH, TEP_AUTH_SET, 2 + ipc_put_bytes(2, req.payload + 1, old_n + n), 0, &info);
+        return;
+    }
+
+    case TEP_MB_CMD_BOOT_VERIFY:
+        if (req.payload_len != TEP_MB_BOOT_VERIFY_LEN) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        if (call_server(TEP_SVC_ID_BOOT, TEP_BOOT_VERIFY, ipc_put_bytes(0, req.payload, req.payload_len),
+                        1, &info)) {
+            put32(resp.payload, (uint32_t)seL4_GetMR(0));
+            resp.payload_len = 4;
+        }
+        return;
+
+    case TEP_MB_CMD_AUTH_STATUS:
+        if (req.payload_len != 0) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        if (call_server(TEP_SVC_ID_AUTH, TEP_AUTH_STATUS, 0, TEP_AUTH_STATUS_LEN, &info)) {
+            seL4_Word wait = seL4_GetMR(3);
+            resp.payload[0] = (seL4_Uint8)seL4_GetMR(0);
+            resp.payload[1] = (seL4_Uint8)seL4_GetMR(1);
+            resp.payload[2] = (seL4_Uint8)seL4_GetMR(2);
+            resp.payload[3] = 0;
+            put32(resp.payload + 4, wait > 0xffffffffUL ? 0xffffffffU : (uint32_t)wait);
+            resp.payload_len = TEP_MB_AUTH_STATUS_LEN;
+        }
+        return;
+
     default:
         resp.status = TEP_MB_BAD_COMMAND;
         return;
@@ -306,8 +386,8 @@ static void handle_request(void)
         }
         resp.payload[0] = TEP_MB_VERSION;
         resp.payload[1] = 0;
-        resp.payload[2] = TEP_MB_FEATURE_CRYPTO & 0xff;
-        resp.payload[3] = TEP_MB_FEATURE_CRYPTO >> 8;
+        resp.payload[2] = (TEP_MB_FEATURE_CRYPTO | TEP_MB_FEATURE_AUTH | TEP_MB_FEATURE_BOOT) & 0xff;
+        resp.payload[3] = (TEP_MB_FEATURE_CRYPTO | TEP_MB_FEATURE_AUTH | TEP_MB_FEATURE_BOOT) >> 8;
         put32(&resp.payload[4], TEPOS_VERSION_WORD);
         put32(&resp.payload[8], boot_id);
         resp.payload_len = TEP_MB_HELLO_LEN;

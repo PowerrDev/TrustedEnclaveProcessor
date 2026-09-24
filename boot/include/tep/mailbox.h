@@ -51,7 +51,29 @@ enum tep_mb_command {
     TEP_MB_CMD_KEY_PUBLIC   = 0x0021,   /* request: u32 handle; response: 32-byte public key */
     TEP_MB_CMD_KEY_SIGN     = 0x0022,   /* request: u32 handle, 1..224 bytes; response: 64-byte signature */
     TEP_MB_CMD_KEY_DELETE   = 0x0023,   /* request: u32 handle; response: empty */
+
+    /* TEP_MB_FEATURE_AUTH: the passcode, checked inside tepOS. */
+    TEP_MB_CMD_AUTH_SET     = 0x0030,   /* request: u8 old n (0 if none set), old, new; response: empty */
+    TEP_MB_CMD_AUTH_VERIFY  = 0x0031,   /* request: passcode (4..64 bytes); response: empty */
+    TEP_MB_CMD_AUTH_STATUS  = 0x0032,   /* request: empty; response: tep_mb_auth_status */
+
+    /* TEP_MB_FEATURE_BOOT: signed boot manifests (<tep/boot_manifest.h>). */
+    TEP_MB_CMD_BOOT_VERIFY  = 0x0040,   /* request: 136-byte manifest, 32-byte measured SHA-256;
+                                         * response: OK u32 version | DENIED u8 reason |
+                                         * ROLLBACK u32 minimum version */
 };
+
+#define TEP_MB_BOOT_VERIFY_LEN (136u + 32u)
+
+/*
+ * AUTH_VERIFY and AUTH_SET (with an old passcode) answer OK, DENIED, LOCKED
+ * or RETRY_LATER with a u32 payload: seconds before the next attempt is
+ * accepted. AUTH_STATUS response, 8 bytes: u8 passcode set, u8 failures,
+ * u8 locked, u8 reserved, u32 seconds before the next attempt.
+ */
+#define TEP_MB_AUTH_STATUS_LEN 8u
+#define TEP_MB_PASSCODE_MIN 4u
+#define TEP_MB_PASSCODE_MAX 64u
 
 /*
  * Keys are generated inside tepOS and named by an opaque u32 handle; private
@@ -70,8 +92,12 @@ enum tep_mb_status {
     TEP_MB_BAD_LENGTH    = 3,
     TEP_MB_UNAVAILABLE   = 4,   /* tepOS cannot serve this right now */
     TEP_MB_INTERNAL      = 5,
-    TEP_MB_NOT_FOUND     = 6,   /* no such key handle (for this caller) */
+    TEP_MB_NOT_FOUND     = 6,   /* no such key handle (for this caller); no passcode set */
     TEP_MB_FULL          = 7,   /* no room for another key */
+    TEP_MB_DENIED        = 8,   /* wrong passcode */
+    TEP_MB_RETRY_LATER   = 9,   /* too soon after failures: u32 seconds to wait */
+    TEP_MB_LOCKED        = 10,  /* passcode locked until a recovery reset on the tepOS side */
+    TEP_MB_ROLLBACK      = 11,  /* image older than the newest accepted: u32 minimum version */
 };
 
 /*
@@ -83,6 +109,8 @@ enum tep_mb_status {
  */
 #define TEP_MB_HELLO_LEN 12u
 #define TEP_MB_FEATURE_CRYPTO (1u << 0)    /* SHA256, RANDOM and the KEY_* commands */
+#define TEP_MB_FEATURE_AUTH   (1u << 1)    /* the AUTH_* commands */
+#define TEP_MB_FEATURE_BOOT   (1u << 2)    /* BOOT_VERIFY */
 
 /*
  * GET_HEALTH response payload, 4 + 4 * n bytes:
