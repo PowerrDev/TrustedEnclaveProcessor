@@ -49,6 +49,7 @@ struct tep_service {
     seL4_Word perms;        /* TEP_PERM_* requests it may make to the root task */
     seL4_Word dev_paddr;    /* device MMIO page, or 0 */
     seL4_Word dev_irq;      /* device interrupt, or 0 */
+    seL4_Word dev2_paddr;   /* a second device page (TEP_SVC_DEVICE2_BASE), or 0 */
     int dma;                /* give it one DMA page (TEP_SVC_DMA_BASE) */
     int serves;             /* has an endpoint other services may call */
     seL4_Word uses;         /* BIT(server id) of each server it may call */
@@ -66,6 +67,7 @@ struct tep_service {
     seL4_CPtr ping;         /* root's signal cap to it, badged TEP_SVC_EVENT_PING */
     seL4_CPtr endpoint;     /* a server's endpoint (original cap), this instance */
     seL4_CPtr dev_frame;    /* root-owned device frame, kept across restarts */
+    seL4_CPtr dev2_frame;   /* same, for the second device */
     seL4_CPtr irq_handler;  /* root-owned IRQ handler, kept across restarts */
     seL4_Word dma_paddr;    /* physical address of the DMA page, this instance */
 

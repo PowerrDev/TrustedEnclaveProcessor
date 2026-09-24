@@ -121,6 +121,7 @@ enum tep_service_slot {
 #define TEP_SVC_IPC_BUFFER  0x3ff000UL      /* just below the image at 0x400000 */
 #define TEP_SVC_DEVICE_BASE 0x10000000UL    /* the service's device page, if any */
 #define TEP_SVC_DMA_BASE    0x10001000UL    /* its DMA page, if any */
+#define TEP_SVC_DEVICE2_BASE 0x10002000UL   /* its second device page, if any */
 
 /*
  * A service starts with x0 = IPC buffer address, x1 = service id,

@@ -13,7 +13,14 @@
 #include "runtime.h"
 #include "untyped.h"
 
-static struct tep_pool uts[CONFIG_MAX_NUM_BOOTINFO_UNTYPED_CAPS];
+/*
+ * The BootInfo untypeds, then the padding untypeds tep_device_frame_alloc()
+ * carves out of device memory: those stay pools, so a device page in a range
+ * already skipped over can still be reached by splitting its padding block.
+ */
+#define DEVICE_PADDING_POOLS 64
+
+static struct tep_pool uts[CONFIG_MAX_NUM_BOOTINFO_UNTYPED_CAPS + DEVICE_PADDING_POOLS];
 static seL4_Word nuts;
 
 static seL4_Word align_up(seL4_Word v, seL4_Word align)
@@ -157,35 +164,52 @@ int tep_pool_revoke(struct tep_pool *pool)
 
 seL4_CPtr tep_device_frame_alloc(seL4_Word paddr)
 {
+    seL4_Word page = paddr & ~(BIT(seL4_PageBits) - 1);
+    struct tep_pool *ut = NULL;
+
+    /* The smallest device pool that holds the page and has not moved past it. */
     for (seL4_Word i = 0; i < nuts; i++) {
-        struct tep_pool *ut = &uts[i];
-        if (!ut->device || paddr < ut->paddr || paddr - ut->paddr >= BIT(ut->size_bits)) {
+        struct tep_pool *p = &uts[i];
+        if (!p->device || page < p->paddr || page - p->paddr >= BIT(p->size_bits) ||
+            p->used > page - p->paddr) {
             continue;
         }
-
-        seL4_Word off = (paddr - ut->paddr) & ~(BIT(seL4_PageBits) - 1);
-        if (ut->used > off) {
-            return seL4_CapNull;    /* already handed out */
+        if (ut == NULL || p->size_bits < ut->size_bits) {
+            ut = p;
         }
-
-        /*
-         * Retype padding untypeds until the page at `off` is next: each step
-         * takes the largest naturally aligned block that ends at or before it.
-         */
-        while (ut->used < off) {
-            seL4_Word bits = seL4_PageBits;
-            while (bits + 1 < ut->size_bits &&
-                   (ut->used & (BIT(bits + 1) - 1)) == 0 &&
-                   ut->used + BIT(bits + 1) <= off) {
-                bits++;
-            }
-            if (tep_pool_alloc(ut, seL4_UntypedObject, bits) == seL4_CapNull) {
-                return seL4_CapNull;
-            }
-        }
-        return tep_pool_alloc(ut, seL4_ARM_SmallPageObject, 0);
     }
-    return seL4_CapNull;
+    if (ut == NULL) {
+        return seL4_CapNull;    /* not device memory, or already handed out */
+    }
+
+    /*
+     * Retype padding untypeds until the page at `off` is next: each step takes
+     * the largest naturally aligned block that ends at or before it, and keeps
+     * it as a pool of its own for later requests in that range.
+     */
+    seL4_Word off = page - ut->paddr;
+    while (ut->used < off) {
+        seL4_Word bits = seL4_PageBits;
+        while (bits + 1 < ut->size_bits &&
+               (ut->used & (BIT(bits + 1) - 1)) == 0 &&
+               ut->used + BIT(bits + 1) <= off) {
+            bits++;
+        }
+        seL4_Word start = ut->used;
+        seL4_CPtr cap = tep_pool_alloc(ut, seL4_UntypedObject, bits);
+        if (cap == seL4_CapNull) {
+            return seL4_CapNull;
+        }
+        if (nuts < sizeof(uts) / sizeof(uts[0])) {
+            uts[nuts].cap = cap;
+            uts[nuts].paddr = ut->paddr + start;
+            uts[nuts].size_bits = bits;
+            uts[nuts].used = 0;
+            uts[nuts].device = 1;
+            nuts++;
+        }
+    }
+    return tep_pool_alloc(ut, seL4_ARM_SmallPageObject, 0);
 }
 
 seL4_Word tep_untyped_ram_total(void)
