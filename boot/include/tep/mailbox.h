@@ -43,7 +43,25 @@
 enum tep_mb_command {
     TEP_MB_CMD_HELLO      = 0x0001,     /* request: empty; response: tep_mb_hello */
     TEP_MB_CMD_GET_HEALTH = 0x0002,     /* request: empty; response: tep_mb_health */
+
+    /* TEP_MB_FEATURE_CRYPTO: */
+    TEP_MB_CMD_SHA256       = 0x0010,   /* request: 1..240 bytes; response: 32-byte digest */
+    TEP_MB_CMD_RANDOM       = 0x0011,   /* request: u16 n (1..64); response: n random bytes */
+    TEP_MB_CMD_KEY_GENERATE = 0x0020,   /* request: u8 algorithm; response: u32 handle */
+    TEP_MB_CMD_KEY_PUBLIC   = 0x0021,   /* request: u32 handle; response: 32-byte public key */
+    TEP_MB_CMD_KEY_SIGN     = 0x0022,   /* request: u32 handle, 1..224 bytes; response: 64-byte signature */
+    TEP_MB_CMD_KEY_DELETE   = 0x0023,   /* request: u32 handle; response: empty */
 };
+
+/*
+ * Keys are generated inside tepOS and named by an opaque u32 handle; private
+ * keys never cross the mailbox. Algorithms: TEP_MB_ALG_ED25519 (RFC 8032).
+ * Signatures cover the message bytes as sent.
+ */
+#define TEP_MB_ALG_ED25519 1u
+#define TEP_MB_SHA256_MAX 240u
+#define TEP_MB_RANDOM_MAX 64u
+#define TEP_MB_SIGN_MAX   224u
 
 enum tep_mb_status {
     TEP_MB_OK            = 0,
@@ -52,16 +70,19 @@ enum tep_mb_status {
     TEP_MB_BAD_LENGTH    = 3,
     TEP_MB_UNAVAILABLE   = 4,   /* tepOS cannot serve this right now */
     TEP_MB_INTERNAL      = 5,
+    TEP_MB_NOT_FOUND     = 6,   /* no such key handle (for this caller) */
+    TEP_MB_FULL          = 7,   /* no room for another key */
 };
 
 /*
  * HELLO response payload, 12 bytes:
  *   0  u16 protocol version (TEP_MB_VERSION)
- *   2  u16 flags (0)
+ *   2  u16 flags: TEP_MB_FEATURE_* the tepOS answering supports
  *   4  u32 tepOS version, major << 16 | minor << 8 | patch
  *   8  u32 boot id: changes when tepOS reboots (not secret, not random)
  */
 #define TEP_MB_HELLO_LEN 12u
+#define TEP_MB_FEATURE_CRYPTO (1u << 0)    /* SHA256, RANDOM and the KEY_* commands */
 
 /*
  * GET_HEALTH response payload, 4 + 4 * n bytes:

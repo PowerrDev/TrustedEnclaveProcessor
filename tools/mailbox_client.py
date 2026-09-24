@@ -10,6 +10,9 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 import argparse
+import hashlib
+import os
+import subprocess
 import socket
 import struct
 import sys
@@ -20,8 +23,13 @@ MAGIC = 0x5054
 VERSION = 1
 REQUEST, RESPONSE = 1, 2
 HELLO, GET_HEALTH = 0x0001, 0x0002
+SHA256, RANDOM = 0x0010, 0x0011
+KEY_GENERATE, KEY_PUBLIC, KEY_SIGN, KEY_DELETE = 0x0020, 0x0021, 0x0022, 0x0023
+ALG_ED25519 = 1
+FEATURE_CRYPTO = 1
+ED25519_CHECK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "ed25519_check")
 STATUS = {0: "OK", 1: "BAD_VERSION", 2: "BAD_COMMAND", 3: "BAD_LENGTH",
-          4: "UNAVAILABLE", 5: "INTERNAL"}
+          4: "UNAVAILABLE", 5: "INTERNAL", 6: "NOT_FOUND", 7: "FULL"}
 HEALTH = {0: "starting", 1: "ok", 2: "degraded", 3: "failed"}
 STATE = {0: "stopped", 1: "starting", 2: "ready", 3: "failed", 4: "disabled"}
 HEADER = struct.Struct("<HBBHHIHH")
@@ -98,6 +106,74 @@ def show(resp):
     return out
 
 
+def ed25519_valid(public, signature, message):
+    """Verify with build/ed25519_check (make ed25519-check), independently of tepOS."""
+    if not os.path.exists(ED25519_CHECK):
+        raise SystemExit("mailbox_client: run `make ed25519-check` first")
+    return subprocess.run([ED25519_CHECK, public.hex(), signature.hex(), message.hex()]).returncode == 0
+
+
+def crypto_selftest(link, check):
+    """The TEP_MB_FEATURE_CRYPTO commands. Returns the number of failures."""
+    before = [0]
+
+    def c(name, cond, detail=""):
+        before[0] += not cond
+        check(name, cond, detail)
+
+    rid = [1000]
+
+    def req(cmd, payload=b""):
+        rid[0] += 1
+        r = link.request(cmd, rid[0], payload=payload)
+        if r is None or r["request_id"] != rid[0]:
+            raise AssertionError("no response to command 0x%x" % cmd)
+        return r
+
+    r = link.request(HELLO, 999)
+    c("HELLO advertises crypto", r and struct.unpack_from("<H", r["payload"], 2)[0] & FEATURE_CRYPTO)
+
+    for msg in (b"abc", bytes(range(240))):
+        r = req(SHA256, msg)
+        c("SHA256 of %d bytes matches hashlib" % len(msg), r["status"] == 0 and r["payload"] == hashlib.sha256(msg).digest(),
+          "status %s" % STATUS.get(r["status"], r["status"]))
+    rid[0] += 1
+    c("SHA256 over 240 bytes: frame dropped", link.request(SHA256, rid[0], payload=bytes(241)) is None)
+    c("SHA256 of nothing refused", req(SHA256, b"")["status"] == 3)
+
+    a, b = req(RANDOM, struct.pack("<H", 32)), req(RANDOM, struct.pack("<H", 32))
+    c("RANDOM 32 bytes twice, different", a["status"] == 0 and len(a["payload"]) == 32 and a["payload"] != b["payload"])
+    c("RANDOM 65 bytes refused", req(RANDOM, struct.pack("<H", 65))["status"] == 3)
+
+    r = req(KEY_GENERATE, bytes([ALG_ED25519]))
+    c("KEY_GENERATE Ed25519", r["status"] == 0 and len(r["payload"]) == 4)
+    handle = r["payload"]
+    pub = req(KEY_PUBLIC, handle)
+    c("KEY_PUBLIC returns 32 bytes", pub["status"] == 0 and len(pub["payload"]) == 32)
+    message = b"NXU boot image digest " + hashlib.sha256(b"kernel").digest()
+    sig = req(KEY_SIGN, handle + message)
+    c("KEY_SIGN returns 64 bytes", sig["status"] == 0 and len(sig["payload"]) == 64)
+    c("signature verifies on the host", ed25519_valid(pub["payload"], sig["payload"], message))
+    c("signature fails for another message", not ed25519_valid(pub["payload"], sig["payload"], message + b"!"))
+    c("KEY_SIGN of 225 bytes refused", req(KEY_SIGN, handle + bytes(225))["status"] == 3)
+    c("unknown key algorithm refused", req(KEY_GENERATE, bytes([99]))["status"] == 2)
+    c("unknown handle: NOT_FOUND", req(KEY_PUBLIC, struct.pack("<I", 0))["status"] == 6)
+    c("KEY_DELETE", req(KEY_DELETE, handle)["status"] == 0)
+    c("deleted key: NOT_FOUND", req(KEY_SIGN, handle + b"x")["status"] == 6)
+
+    handles = []
+    for _ in range(40):
+        r = req(KEY_GENERATE, bytes([ALG_ED25519]))
+        if r["status"] != 0:
+            break
+        handles.append(r["payload"])
+    c("key table fills at 32 keys, then FULL", len(handles) == 32 and r["status"] == 7)
+    c("handles are unique", len(set(handles)) == len(handles))
+    for h in handles:
+        req(KEY_DELETE, h)
+    return before[0]
+
+
 def selftest(link):
     failures = 0
 
@@ -141,6 +217,7 @@ def selftest(link):
         ids.append(r["request_id"] if r else None)
     check("20 back-to-back requests", ids == list(range(100, 120)))
 
+    failures += crypto_selftest(link, check)
     print("selftest: %s" % ("passed" if failures == 0 else "%d failure(s)" % failures))
     return failures == 0
 

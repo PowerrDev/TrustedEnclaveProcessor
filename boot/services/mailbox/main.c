@@ -7,6 +7,11 @@
  * holds no key material and cannot reach other services' memory; the only
  * thing it may ask the root task for is health (TEP_PERM_HEALTH).
  *
+ * The crypto commands (TEP_MB_FEATURE_CRYPTO) are passed on as requests to
+ * the CryptoService and the KeyStore through the badged capabilities the
+ * root task gave it; it only sees what they return (digests, random bytes,
+ * handles, public keys, signatures), never private keys.
+ *
  * Started by the root task with x0 = IPC buffer address, x1 = service id.
  *
  * SPDX-License-Identifier: BSD-2-Clause
@@ -15,9 +20,11 @@
 #include <sel4/sel4.h>
 #include <tep/ipc.h>
 #include <tep/mailbox.h>
+#include <tep/services.h>
 
 #include "console.h"
 #include "frame.h"
+#include "ipc_bytes.h"
 #include "pl011.h"
 #include "tls.h"
 
@@ -91,6 +98,189 @@ static void put32(seL4_Uint8 *p, seL4_Uint32 v)
     p[3] = v >> 24;
 }
 
+static uint32_t get32(const seL4_Uint8 *p)
+{
+    return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+/*
+ * Is service `id` running and ready? Calling through the capability slot of a
+ * server that is down would fault (the slot is empty), so every call to a
+ * server checks this first.
+ */
+static int server_ready(seL4_Word id)
+{
+    seL4_Word boot_id, health, n, entries[TEP_IPC_MAX_SERVICES];
+
+    if (query_health(&boot_id, &health, &n, entries) != 0) {
+        return 0;
+    }
+    for (seL4_Word i = 0; i < n; i++) {
+        if ((entries[i] & 0xff) == id) {
+            return ((entries[i] >> 8) & 0xff) == TEP_MB_SVC_READY;
+        }
+    }
+    return 0;
+}
+
+static seL4_Uint16 mailbox_status(seL4_Word service_status)
+{
+    switch (service_status) {
+    case TEP_STATUS_OK:
+        return TEP_MB_OK;
+    case TEP_STATUS_BAD_LENGTH:
+        return TEP_MB_BAD_LENGTH;
+    case TEP_STATUS_BAD_LABEL:
+        return TEP_MB_BAD_COMMAND;     /* e.g. an unknown key algorithm */
+    case TEP_STATUS_NOT_FOUND:
+        return TEP_MB_NOT_FOUND;
+    case TEP_STATUS_FULL:
+        return TEP_MB_FULL;
+    case TEP_STATUS_UNAVAILABLE:
+        return TEP_MB_UNAVAILABLE;
+    default:
+        return TEP_MB_INTERNAL;
+    }
+}
+
+/*
+ * Call server `id` with the message registers already set (server_ready()
+ * must have been checked before setting them: it uses the registers too).
+ * Returns 1 with *info holding an OK reply of exactly want_len registers;
+ * otherwise sets resp.status and returns 0.
+ */
+static int call_server(seL4_Word id, seL4_Word label, seL4_Word len, seL4_Word want_len,
+                       seL4_MessageInfo_t *info)
+{
+    *info = seL4_Call(TEP_SVC_SLOT_SERVER(id), seL4_MessageInfo_new(label, 0, 0, len));
+    if (seL4_MessageInfo_get_label(*info) != TEP_STATUS_OK) {
+        resp.status = mailbox_status(seL4_MessageInfo_get_label(*info));
+        return 0;
+    }
+    if (seL4_MessageInfo_get_length(*info) != want_len) {
+        resp.status = TEP_MB_INTERNAL;
+        return 0;
+    }
+    return 1;
+}
+
+/* The TEP_MB_FEATURE_CRYPTO commands. */
+static void handle_crypto_request(void)
+{
+    seL4_MessageInfo_t info;
+    seL4_Word n, server;
+
+    switch (req.command) {
+    case TEP_MB_CMD_SHA256:
+    case TEP_MB_CMD_RANDOM:
+        server = TEP_SVC_ID_CRYPTO;
+        break;
+    case TEP_MB_CMD_KEY_GENERATE:
+    case TEP_MB_CMD_KEY_PUBLIC:
+    case TEP_MB_CMD_KEY_SIGN:
+    case TEP_MB_CMD_KEY_DELETE:
+        server = TEP_SVC_ID_KEYSTORE;
+        break;
+    default:
+        resp.status = TEP_MB_BAD_COMMAND;
+        return;
+    }
+    /* Before any message register is set: the health query uses them. */
+    if (!server_ready(server)) {
+        resp.status = TEP_MB_UNAVAILABLE;
+        return;
+    }
+
+    switch (req.command) {
+    case TEP_MB_CMD_SHA256:
+        n = req.payload_len;
+        if (n == 0 || n > TEP_MB_SHA256_MAX) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, n);
+        if (call_server(TEP_SVC_ID_CRYPTO, TEP_CRYPTO_SHA256, 1 + ipc_put_bytes(1, req.payload, n),
+                        TEP_BYTES_WORDS(32), &info)) {
+            ipc_get_bytes(0, resp.payload, 32);
+            resp.payload_len = 32;
+        }
+        return;
+
+    case TEP_MB_CMD_RANDOM:
+        if (req.payload_len != 2) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        n = req.payload[0] | (seL4_Word)req.payload[1] << 8;
+        if (n == 0 || n > TEP_MB_RANDOM_MAX) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, n);
+        if (call_server(TEP_SVC_ID_CRYPTO, TEP_CRYPTO_RANDOM, 1, 1 + TEP_BYTES_WORDS(n), &info)) {
+            if (seL4_GetMR(0) != n) {
+                resp.status = TEP_MB_INTERNAL;
+                return;
+            }
+            ipc_get_bytes(1, resp.payload, n);
+            resp.payload_len = n;
+        }
+        return;
+
+    case TEP_MB_CMD_KEY_GENERATE:
+        if (req.payload_len != 1) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, req.payload[0]);
+        if (call_server(TEP_SVC_ID_KEYSTORE, TEP_KS_GENERATE, 1, 1, &info)) {
+            put32(resp.payload, (uint32_t)seL4_GetMR(0));
+            resp.payload_len = 4;
+        }
+        return;
+
+    case TEP_MB_CMD_KEY_PUBLIC:
+        if (req.payload_len != 4) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, get32(req.payload));
+        if (call_server(TEP_SVC_ID_KEYSTORE, TEP_KS_PUBLIC, 1, TEP_BYTES_WORDS(TEP_KS_PUBLIC_KEY_SIZE), &info)) {
+            ipc_get_bytes(0, resp.payload, TEP_KS_PUBLIC_KEY_SIZE);
+            resp.payload_len = TEP_KS_PUBLIC_KEY_SIZE;
+        }
+        return;
+
+    case TEP_MB_CMD_KEY_SIGN:
+        n = req.payload_len >= 4 ? req.payload_len - 4u : 0;
+        if (req.payload_len < 5 || n > TEP_MB_SIGN_MAX) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, get32(req.payload));
+        seL4_SetMR(1, n);
+        if (call_server(TEP_SVC_ID_KEYSTORE, TEP_KS_SIGN, 2 + ipc_put_bytes(2, req.payload + 4, n),
+                        TEP_BYTES_WORDS(TEP_KS_SIGNATURE_SIZE), &info)) {
+            ipc_get_bytes(0, resp.payload, TEP_KS_SIGNATURE_SIZE);
+            resp.payload_len = TEP_KS_SIGNATURE_SIZE;
+        }
+        return;
+
+    case TEP_MB_CMD_KEY_DELETE:
+        if (req.payload_len != 4) {
+            resp.status = TEP_MB_BAD_LENGTH;
+            return;
+        }
+        seL4_SetMR(0, get32(req.payload));
+        call_server(TEP_SVC_ID_KEYSTORE, TEP_KS_DELETE, 1, 0, &info);
+        return;
+
+    default:
+        resp.status = TEP_MB_BAD_COMMAND;
+        return;
+    }
+}
+
 /* Fill resp (status and payload) for a well-formed request frame. */
 static void handle_request(void)
 {
@@ -116,8 +306,8 @@ static void handle_request(void)
         }
         resp.payload[0] = TEP_MB_VERSION;
         resp.payload[1] = 0;
-        resp.payload[2] = 0;
-        resp.payload[3] = 0;
+        resp.payload[2] = TEP_MB_FEATURE_CRYPTO & 0xff;
+        resp.payload[3] = TEP_MB_FEATURE_CRYPTO >> 8;
         put32(&resp.payload[4], TEPOS_VERSION_WORD);
         put32(&resp.payload[8], boot_id);
         resp.payload_len = TEP_MB_HELLO_LEN;
@@ -147,7 +337,7 @@ static void handle_request(void)
         return;
 
     default:
-        resp.status = TEP_MB_BAD_COMMAND;
+        handle_crypto_request();
         return;
     }
 }
